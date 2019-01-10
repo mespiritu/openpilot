@@ -190,6 +190,7 @@ class LatControl(object):
 
     if v_ego < 0.3 or not active:
       output_steer = 0.0
+      self.ateer_vibrate = 0.0
       self.feed_forward = 0.0
       self.pid.reset()
       self.angle_steers_des = angle_steers
@@ -254,6 +255,16 @@ class LatControl(object):
       self.angle_rate_desired = 0.0
       self.observed_ratio = 0.0
       capture_all = True
+      if abs(output_steer) < 1.0:
+        #print("crap")
+        if self.ateer_vibrate < 0:
+          print("even")
+          self.ateer_vibrate = 1.5
+        else:
+          print("odd")
+          self.ateer_vibrate = -.1
+      else:
+        self.ateer_vibrate = 1.0
       if self.mpc_updated or capture_all:
         self.frames += 1
         self.steerdata += ("%d,%s,%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d|" % (1, \
@@ -267,13 +278,13 @@ class LatControl(object):
         self.l_poly[0], self.l_poly[1], self.l_poly[2], self.l_poly[3], self.r_poly[0], self.r_poly[1], self.r_poly[2], self.r_poly[3], \
         self.p_poly[0], self.p_poly[1], self.p_poly[2], self.p_poly[3], PL.PP.c_poly[0], PL.PP.c_poly[1], PL.PP.c_poly[2], PL.PP.c_poly[3], \
         PL.PP.d_poly[0], PL.PP.d_poly[1], PL.PP.d_poly[2], PL.PP.lane_width, PL.PP.lane_width_estimate, PL.PP.lane_width_certainty, v_ego, \
-        self.pid.p, self.pid.i, self.pid.f, int(time.time() * 100) * 10000000))
+        self.ateer_vibrate * self.pid.p, self.ateer_vibrate * self.pid.i, self.ateer_vibrate * self.pid.f, int(time.time() * 100) * 10000000))
 
     self.sat_flag = self.pid.saturated
     self.prev_angle_rate = angle_rate
     self.prev_angle_steers = angle_steers
 
     if CP.steerControlType == car.CarParams.SteerControlType.torque:
-      return output_steer, float(self.angle_steers_des_mpc)
+      return self.ateer_vibrate * output_steer, float(self.angle_steers_des_mpc)
     else:
       return float(self.angle_steers_des_mpc), float(self.angle_steers_des)
