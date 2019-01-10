@@ -15,7 +15,7 @@ _DT = 0.01    # 100Hz
 _DT_MPC = 0.05  # 20Hz
 
 def calc_states_after_delay(states, v_ego, steer_angle, curvature_factor, steer_ratio, delay, long_camera_offset):
-  states[0].x = v_ego * delay + long_camera_offset
+  states[0].x = max(0.0, v_ego * delay + long_camera_offset)
   states[0].psi = v_ego * curvature_factor * math.radians(steer_angle) / steer_ratio * delay
   return states
 
@@ -173,7 +173,6 @@ class LatControl(object):
                           mpc_time + _DT_MPC + _DT_MPC]
 
         self.angle_steers_des_mpc = self.mpc_angles[1]
-        #self.cur_state[0].delta = self.mpc_solution[0].delta[1]
 
       else:
         self.libmpc.init(MPC_COST_LAT.PATH, MPC_COST_LAT.LANE, MPC_COST_LAT.HEADING, CP.steerRateCost)
@@ -255,16 +254,6 @@ class LatControl(object):
       self.angle_rate_desired = 0.0
       self.observed_ratio = 0.0
       capture_all = True
-      if abs(output_steer) < 1.0:
-        #print("crap")
-        if self.ateer_vibrate < 0:
-          print("even")
-          self.ateer_vibrate = 1.5
-        else:
-          print("odd")
-          self.ateer_vibrate = -.1
-      else:
-        self.ateer_vibrate = 1.0
       if self.mpc_updated or capture_all:
         self.frames += 1
         self.steerdata += ("%d,%s,%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d|" % (1, \
@@ -278,13 +267,13 @@ class LatControl(object):
         self.l_poly[0], self.l_poly[1], self.l_poly[2], self.l_poly[3], self.r_poly[0], self.r_poly[1], self.r_poly[2], self.r_poly[3], \
         self.p_poly[0], self.p_poly[1], self.p_poly[2], self.p_poly[3], PL.PP.c_poly[0], PL.PP.c_poly[1], PL.PP.c_poly[2], PL.PP.c_poly[3], \
         PL.PP.d_poly[0], PL.PP.d_poly[1], PL.PP.d_poly[2], PL.PP.lane_width, PL.PP.lane_width_estimate, PL.PP.lane_width_certainty, v_ego, \
-        self.ateer_vibrate * self.pid.p, self.ateer_vibrate * self.pid.i, self.ateer_vibrate * self.pid.f, int(time.time() * 100) * 10000000))
+        self.pid.p, self.pid.i, self.pid.f, int(time.time() * 100) * 10000000))
 
     self.sat_flag = self.pid.saturated
     self.prev_angle_rate = angle_rate
     self.prev_angle_steers = angle_steers
 
     if CP.steerControlType == car.CarParams.SteerControlType.torque:
-      return self.ateer_vibrate * output_steer, float(self.angle_steers_des_mpc)
+      return output_steer, float(self.angle_steers_des_mpc)
     else:
       return float(self.angle_steers_des_mpc), float(self.angle_steers_des)
