@@ -72,6 +72,11 @@ class CarInterface(object):
     ret.steerActuatorDelay = 0.1  # Default delay
     tire_stiffness_factor = 1.
 
+    ret.steerReactance = 1.0
+    ret.steerInductance = 1.0
+    ret.steerResistance = 1.0
+    ret.eonToFront = 0.5
+    
     if candidate == CAR.SANTA_FE:
       ret.steerKf = 0.00005
       ret.steerRateCost = 0.5
