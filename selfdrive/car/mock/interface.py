@@ -49,6 +49,11 @@ class CarInterface(object):
     ret.safetyModel = car.CarParams.SafetyModels.noOutput
     ret.openpilotLongitudinalControl = False
 
+    ret.steerReactance = 1.0
+    ret.steerInductance = 1.0
+    ret.steerResistance = 1.0
+    ret.eonToFront = 0.5
+    
     # FIXME: hardcoding honda civic 2016 touring params so they can be used to
     # scale unknown params for other cars
     ret.mass = 1700.
