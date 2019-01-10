@@ -34,7 +34,6 @@ def apply_deadzone(angle, deadzone):
 class LatControl(object):
   def __init__(self, CP):
 
-    self.longCameraOffset = CP.eonToFront
     KpV = [np.interp(25.0, CP.steerKpBP, CP.steerKpV) * CP.steerReactance]
     KiV = [np.interp(25.0, CP.steerKiBP, CP.steerKiV) * CP.steerReactance]
     Kf = CP.steerKf * CP.steerInductance
@@ -103,11 +102,6 @@ class LatControl(object):
     self.cur_state[0].y = 0.0
     self.cur_state[0].psi = 0.0
     self.cur_state[0].delta = 0.0
-    self.massage = 0.0
-    self.massageDirection = 0.0
-    self.massageStep = 0.0001
-    self.massagePeriod = 10.0
-    self.massagePeriodStep = 0.01
 
   def reset(self):
     self.pid.reset()
@@ -134,7 +128,7 @@ class LatControl(object):
       self.calculate_rate = False
 
     # TODO: this creates issues in replay when rewinding time: mpc won't run
-    if self.last_mpc_ts < PL.last_md_ts:  # and PL.last_md_ts - self.last_mpc_ts > 40000000:
+    if self.last_mpc_ts < PL.last_md_ts:
       self.last_mpc_ts = PL.last_md_ts
       cur_time = sec_since_boot()
       mpc_time = float(self.last_mpc_ts / 1000000000.0)
@@ -152,7 +146,7 @@ class LatControl(object):
       self.p_poly = libmpc_py.ffi.new("double[4]", list(PL.PP.p_poly))
 
       # account for actuation delay and the age of the plan
-      self.cur_state = calc_states_after_delay(self.cur_state, v_ego, self.projected_angle_steers, self.curvature_factor, CP.steerRatio, total_delay, self.longCameraOffset)
+      self.cur_state = calc_states_after_delay(self.cur_state, v_ego, self.projected_angle_steers, self.curvature_factor, CP.steerRatio, total_delay, CP.eonToFront)
 
       v_ego_mpc = max(v_ego, 5.0)  # avoid mpc roughness due to low speed
       self.libmpc.run_mpc(self.cur_state, self.mpc_solution,
