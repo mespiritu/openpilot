@@ -13,10 +13,9 @@ from cereal import car
 
 _DT = 0.01    # 100Hz
 _DT_MPC = 0.05  # 20Hz
-_LONGITUDINAL_CAMERA_OFFSET = 1.0
 
-def calc_states_after_delay(states, v_ego, steer_angle, curvature_factor, steer_ratio, delay):
-  states[0].x = v_ego * delay + _LONGITUDINAL_CAMERA_OFFSET
+def calc_states_after_delay(states, v_ego, steer_angle, curvature_factor, steer_ratio, delay, long_camera_offset):
+  states[0].x = v_ego * delay + long_camera_offset
   states[0].psi = v_ego * curvature_factor * math.radians(steer_angle) / steer_ratio * delay
   return states
 
@@ -153,9 +152,7 @@ class LatControl(object):
       self.p_poly = libmpc_py.ffi.new("double[4]", list(PL.PP.p_poly))
 
       # account for actuation delay and the age of the plan
-      self.cur_state = calc_states_after_delay(self.cur_state, v_ego, self.projected_angle_steers, self.curvature_factor, CP.steerRatio, total_delay)
-      #self.cur_state = calc_states_after_delay(self.cur_state, v_ego, self.projected_angle_steers, self.curvature_factor, CP.steerRatio, CP.steerActuatorDelay)
-      #self.cur_state = calc_states_after_delay(self.cur_state, v_ego, angle_steers, self.curvature_factor, CP.steerRatio, CP.steerActuatorDelay)
+      self.cur_state = calc_states_after_delay(self.cur_state, v_ego, self.projected_angle_steers, self.curvature_factor, CP.steerRatio, total_delay, self.longCameraOffset)
 
       v_ego_mpc = max(v_ego, 5.0)  # avoid mpc roughness due to low speed
       self.libmpc.run_mpc(self.cur_state, self.mpc_solution,
@@ -275,16 +272,8 @@ class LatControl(object):
     self.sat_flag = self.pid.saturated
     self.prev_angle_rate = angle_rate
     self.prev_angle_steers = angle_steers
-    if self.frames % int(self.massagePeriod) < int(self.massagePeriod) / 2:
-      self.massage += self.massageStep
-    else:
-      self.massage -= self.massageStep
-    self.massageDirection *= -1.0
-    if self.frames % int(self.massagePeriod) == 0:
-      self.massagePeriodStep += 0.01
 
     if CP.steerControlType == car.CarParams.SteerControlType.torque:
       return output_steer, float(self.angle_steers_des_mpc)
-      #return (self.massage * self.massageDirection) + output_steer, float(self.angle_steers_des_mpc)
     else:
       return float(self.angle_steers_des_mpc), float(self.angle_steers_des)
