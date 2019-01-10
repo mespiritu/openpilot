@@ -66,6 +66,11 @@ class CarInterface(object):
 
     std_cargo = 136
 
+    ret.steerReactance = 1.0
+    ret.steerInductance = 1.0
+    ret.steerResistance = 1.0
+    ret.eonToFront = 0.5
+    
     if candidate == CAR.VOLT:
       # supports stop and go, but initial engage must be above 18mph (which include conservatism)
       ret.minEnableSpeed = 18 * CV.MPH_TO_MS
