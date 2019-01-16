@@ -34,23 +34,33 @@ def apply_deadzone(angle, deadzone):
 class LatControl(object):
   def __init__(self, CP):
 
-    KpV = [np.interp(25.0, CP.steerKpBP, CP.steerKpV) * CP.steerReactance]
-    KiV = [np.interp(25.0, CP.steerKiBP, CP.steerKiV) * CP.steerReactance]
-    Kf = CP.steerKf * CP.steerInductance
-    print(KpV, KiV, Kf)
-    self.pid = PIController(([0.], KpV),
-                            ([0.], KiV),
-                            k_f=Kf, pos_limit=1.0)
-    self.last_cloudlog_t = 0.0
-    self.setup_mpc(CP.steerRateCost)
-    self.smooth_factor = CP.steerInductance * 2.0 * CP.steerActuatorDelay / _DT    # Multiplier for inductive component (feed forward)
-    self.projection_factor = CP.steerReactance * 5.0 * _DT                         #  Mutiplier for reactive component (PI)
-    self.accel_limit = 2.0 / CP.steerResistance                                    # Desired acceleration limit to prevent "whip steer" (resistive component)
-    self.ff_angle_factor = 0.5                                                     # Kf multiplier for angle-based feed forward
-    self.ff_rate_factor = 5.0                                                      # Kf multiplier for rate-based feed forward
+    if CP.steerResistance > 0 and CP.steerReactance >= 0 and CP.steerInductance > 0:
+      KpV = [np.interp(25.0, CP.steerKpBP, CP.steerKpV) * CP.steerReactance]
+      KiV = [np.interp(25.0, CP.steerKiBP, CP.steerKiV) * CP.steerReactance]
+      Kf = CP.steerKf * CP.steerInductance
+      self.pid = PIController(([0.], KpV),
+                              ([0.], KiV),
+                              k_f=Kf, pos_limit=1.0)
+      self.smooth_factor = CP.steerInductance * 2.0 * CP.steerActuatorDelay / _DT    # Multiplier for inductive component (feed forward)
+      self.projection_factor = CP.steerReactance * 5.0 * _DT                         # Mutiplier for reactive component (PI)
+      self.accel_limit = 2.0 / CP.steerResistance                                    # Desired acceleration limit to prevent "whip steer" (resistive component)
+      self.ff_angle_factor = 0.5                                                     # Kf multiplier for angle-based feed forward
+      self.ff_rate_factor = 5.0                                                      # Kf multiplier for rate-based feed forward
+    else:
+      self.pid = PIController((CP.steerKpBP, CP.steerKpV),
+                              (CP.steerKiBP, CP.steerKiV),
+                              k_f=CP.steerKf, pos_limit=1.0)
+      self.smooth_factor = 1.0                   # Disabled
+      self.projection_factor = 0.0               # Disabled
+      self.accel_limit = 99999.9                 # Disabled
+      self.ff_angle_factor = 1.0                 # Disabled
+      self.ff_rate_factor = 0.0                  # Disabled
+
     self.prev_angle_rate = 0
     self.feed_forward = 0.0
     self.steerActuatorDelay = CP.steerActuatorDelay
+    self.last_cloudlog_t = 0.0
+    self.setup_mpc(CP.steerRateCost)
     self.last_mpc_ts = 0.0
     self.angle_steers_des = 0.0
     self.angle_steers_des_mpc = 0.0
@@ -75,7 +85,7 @@ class LatControl(object):
     self.steerpub = self.context.socket(zmq.PUB)
     self.steerpub.bind("tcp://*:8594")
     self.influxString = 'steerData3,testName=none,active=%s,ff_type=%s ff_type_a=%s,ff_type_r=%s,steer_status=%s,' \
-                    'steering_control_active=%s,steer_stock_torque=%s,steer_stock_torque_request=%s,mpc_age2=%s,mpc_age=%s,lchange=%s,pchange=%s,rchange=%s,d0=%s,d1=%s,d2=%s,' \
+                    'steering_control_active=%s,steer_stock_torque=%s,steer_stock_torque_request=%s,reactance=%s,inductance=%s,resistance=%s,eonToFront=%s,mpc_age2=%s,mpc_age=%s,lchange=%s,pchange=%s,rchange=%s,d0=%s,d1=%s,d2=%s,' \
                     'd3=%s,d4=%s,d5=%s,d6=%s,d7=%s,d8=%s,d9=%s,d10=%s,d11=%s,d12=%s,d13=%s,d14=%s,d15=%s,d16=%s,d17=%s,d18=%s,d19=%s,d20=%s,' \
                     'accel_limit=%s,restricted_steer_rate=%s,driver_torque=%s,angle_rate_desired=%s,future_angle_steers=%s,' \
                     'angle_rate=%s,angle_steers=%s,angle_steers_des=%s,self.angle_steers_des_mpc=%s,projected_angle_steers_des=%s,steerRatio=%s,l_prob=%s,' \
@@ -250,9 +260,9 @@ class LatControl(object):
       capture_all = True
       if self.mpc_updated or capture_all:
         self.frames += 1
-        self.steerdata += ("%d,%s,%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d|" % (1, \
+        self.steerdata += ("%d,%s,%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d|" % (1, \
         ff_type, 1 if ff_type == "a" else 0, 1 if ff_type == "r" else 0, steer_status, steering_control_active, steer_stock_torque, steer_stock_torque_request, \
-        cur_time - float(self.last_mpc_ts / 1000000000.0), cur_time - self.mpc_times[0], self.left_change, self.path_change, self.right_change, self.mpc_solution[0].delta[0], self.mpc_solution[0].delta[1], self.mpc_solution[0].delta[2], self.mpc_solution[0].delta[3], self.mpc_solution[0].delta[4], \
+        CP.steerReactance,CP.steerInductance,CP.steerResistance,CP.eonToFront, cur_time - float(self.last_mpc_ts / 1000000000.0), cur_time - self.mpc_times[0], self.left_change, self.path_change, self.right_change, self.mpc_solution[0].delta[0], self.mpc_solution[0].delta[1], self.mpc_solution[0].delta[2], self.mpc_solution[0].delta[3], self.mpc_solution[0].delta[4], \
         self.mpc_solution[0].delta[5], self.mpc_solution[0].delta[6], self.mpc_solution[0].delta[7], self.mpc_solution[0].delta[8], self.mpc_solution[0].delta[9], \
         self.mpc_solution[0].delta[10], self.mpc_solution[0].delta[11], self.mpc_solution[0].delta[12], self.mpc_solution[0].delta[13], self.mpc_solution[0].delta[14], \
         self.mpc_solution[0].delta[15], self.mpc_solution[0].delta[16], self.mpc_solution[0].delta[17], self.mpc_solution[0].delta[18], self.mpc_solution[0].delta[19], self.mpc_solution[0].delta[20], \
