@@ -35,17 +35,18 @@ class LatControl(object):
   def __init__(self, CP):
 
     if CP.steerResistance > 0 and CP.steerReactance >= 0 and CP.steerInductance > 0:
-      KpV = [np.interp(25.0, CP.steerKpBP, CP.steerKpV) * CP.steerReactance]
-      KiV = [np.interp(25.0, CP.steerKiBP, CP.steerKiV) * CP.steerReactance]
+
+      KpV = [np.interp(25.0, CP.steerKpBP, CP.steerKpV) * 0.8]
+      KiV = [np.interp(25.0, CP.steerKiBP, CP.steerKiV) * 0.8]
       Kf = CP.steerKf * CP.steerInductance
       self.pid = PIController(([0.], KpV),
                               ([0.], KiV),
                               k_f=Kf, pos_limit=1.0)
-      self.smooth_factor = CP.steerInductance * 2.0 * CP.steerActuatorDelay / _DT    # Multiplier for inductive component (feed forward)
-      self.projection_factor = CP.steerReactance * 5.0 * _DT                         # Mutiplier for reactive component (PI)
-      self.accel_limit = 2.0 / CP.steerResistance                                    # Desired acceleration limit to prevent "whip steer" (resistive component)
-      self.ff_angle_factor = 0.5                                                     # Kf multiplier for angle-based feed forward
-      self.ff_rate_factor = 5.0                                                      # Kf multiplier for rate-based feed forward
+      self.smooth_factor = CP.steerInductance * CP.steerActuatorDelay / _DT    # Multiplier for inductive component (feed forward)
+      self.projection_factor = CP.steerReactance * CP.steerActuatorDelay       # Mutiplier for reactive component (PI)
+      self.accel_limit = 1.0 / CP.steerResistance                              # Desired acceleration limit to prevent "whip steer" (resistive component)
+      self.ff_angle_factor = 0.5                                               # Kf multiplier for angle-based feed forward
+      self.ff_rate_factor = 5.0                                                # Kf multiplier for rate-based feed forward
     else:
       self.pid = PIController((CP.steerKpBP, CP.steerKpV),
                               (CP.steerKiBP, CP.steerKiV),
@@ -56,7 +57,13 @@ class LatControl(object):
       self.ff_angle_factor = 1.0                 # Disabled
       self.ff_rate_factor = 0.0                  # Disabled
 
-    self.prev_angle_rate = 0
+    self.prev_angle_rate = 0.0
+    self.inductance = CP.steerInductance
+    self.reactance = CP.steerReactance
+    self.resistance = CP.steerResistance
+    self.resistanceIndex = 0
+    self.inductanceIndex = 0
+    self.reactanceIndex = 0
     self.feed_forward = 0.0
     self.steerActuatorDelay = CP.steerActuatorDelay
     self.last_cloudlog_t = 0.0
@@ -93,10 +100,36 @@ class LatControl(object):
                     'p_poly[0]=%s,p_poly[1]=%s,p_poly[2]=%s,p_poly[3]=%s,c_poly[0]=%s,c_poly[1]=%s,c_poly[2]=%s,c_poly[3]=%s,d_poly[0]=%s,d_poly[1]=%s,' \
                     'd_poly[2]=%s,lane_width=%s,lane_width_estimate=%s,lane_width_certainty=%s,v_ego=%s,p=%s,i=%s,f=%s %s\n~'
 
+    self.sine_wave = [ 0.0175, 0.0349, 0.0523, 0.0698, 0.0872, 0.1045, 0.1219, 0.1392, 0.1564, 0.1736, 0.1908, 0.2079, 0.225, 0.2419, 0.2588, 0.2756,
+                      0.2924, 0.309, 0.3256, 0.342, 0.3584, 0.3746, 0.3907, 0.4067, 0.4226, 0.4384, 0.454, 0.4695, 0.4848, 0.5, 0.515, 0.5299, 0.5446,
+                      0.5592, 0.5736, 0.5878, 0.6018, 0.6157, 0.6293, 0.6428, 0.6561, 0.6691, 0.682, 0.6947, 0.7071, 0.7193, 0.7314, 0.7431, 0.7547, 0.766,
+                      0.7771, 0.788, 0.7986, 0.809, 0.8192, 0.829, 0.8387, 0.848, 0.8572, 0.866, 0.8746, 0.8829, 0.891, 0.8988, 0.9063, 0.9135, 0.9205,
+                      0.9272, 0.9336, 0.9397, 0.9455, 0.9511, 0.9563, 0.9613, 0.9659, 0.9703, 0.9744, 0.9781, 0.9816, 0.9848, 0.9877, 0.9903, 0.9925,
+                      0.9945, 0.9962, 0.9976, 0.9986, 0.9994, 0.9998, 1, 0.9998, 0.9994, 0.9986, 0.9976, 0.9962, 0.9945, 0.9925, 0.9903, 0.9877, 0.9848,
+                      0.9816, 0.9781, 0.9744, 0.9703, 0.9659, 0.9613, 0.9563, 0.9511, 0.9455, 0.9397, 0.9336, 0.9272, 0.9205, 0.9135, 0.9063, 0.8988,
+                      0.891, 0.8829, 0.8746, 0.866, 0.8572, 0.848, 0.8387, 0.829, 0.8192, 0.809, 0.7986, 0.788, 0.7771, 0.766, 0.7547, 0.7431, 0.7314,
+                      0.7193, 0.7071, 0.6947, 0.682, 0.6691, 0.6561, 0.6428, 0.6293, 0.6157, 0.6018, 0.5878, 0.5736, 0.5592, 0.5446, 0.5299, 0.515,
+                      0.5, 0.4848, 0.4695, 0.454, 0.4384, 0.4226, 0.4067, 0.3907, 0.3746, 0.3584, 0.342, 0.3256, 0.309, 0.2924, 0.2756, 0.2588, 0.2419,
+                      0.225, 0.2079, 0.1908, 0.1736, 0.1564, 0.1392, 0.1219, 0.1045, 0.0872, 0.0698, 0.0523, 0.0349, 0.0175, 0.0, -0.0175, -0.0349, -0.0523,
+                      -0.0698, -0.0872, -0.1045, -0.1219, -0.1392, -0.1564, -0.1736, -0.1908, -0.2079, -0.225, -0.2419, -0.2588, -0.2756, -0.2924, -0.309,
+                      -0.3256, -0.342, -0.3584, -0.3746, -0.3907, -0.4067, -0.4226, -0.4384, -0.454, -0.4695, -0.4848, -0.5, -0.515, -0.5299, -0.5446,
+                      -0.5592, -0.5736, -0.5878, -0.6018, -0.6157, -0.6293, -0.6428, -0.6561, -0.6691, -0.682, -0.6947, -0.7071, -0.7193, -0.7314,
+                      -0.7431, -0.7547, -0.766, -0.7771, -0.788, -0.7986, -0.809, -0.8192, -0.829, -0.8387, -0.848, -0.8572, -0.866, -0.8746, -0.8829,
+                      -0.891, -0.8988, -0.9063, -0.9135, -0.9205, -0.9272, -0.9336, -0.9397, -0.9455, -0.9511, -0.9563, -0.9613, -0.9659, -0.9703,
+                      -0.9744, -0.9781, -0.9816, -0.9848, -0.9877, -0.9903, -0.9925, -0.9945, -0.9962, -0.9976, -0.9986, -0.9994, -0.9998, -1, -0.9998,
+                      -0.9994, -0.9986, -0.9976, -0.9962, -0.9945, -0.9925, -0.9903, -0.9877, -0.9848, -0.9816, -0.9781, -0.9744, -0.9703, -0.9659,
+                      -0.9613, -0.9563, -0.9511, -0.9455, -0.9397, -0.9336, -0.9272, -0.9205, -0.9135, -0.9063, -0.8988, -0.891, -0.8829, -0.8746,
+                      -0.866, -0.8572, -0.848, -0.8387, -0.829, -0.8192, -0.809, -0.7986, -0.788, -0.7771, -0.766, -0.7547, -0.7431, -0.7314,
+                      -0.7193, -0.7071, -0.6947, -0.682, -0.6691, -0.6561, -0.6428, -0.6293, -0.6157, -0.6018, -0.5878, -0.5736, -0.5592, -0.5446,
+                      -0.5299, -0.515, -0.5, -0.4848, -0.4695, -0.454, -0.4384, -0.4226, -0.4067, -0.3907, -0.3746, -0.3584, -0.342, -0.3256,
+                      -0.309, -0.2924, -0.2756, -0.2588, -0.2419, -0.225, -0.2079, -0.1908, -0.1736, -0.1564, -0.1392, -0.1219, -0.1045, -0.0872,
+                      -0.0698, -0.0523, -0.0349, -0.0175, 0.0]
+
     self.steerdata = self.influxString
     self.frames = 0
     self.curvature_factor = 0.0
     self.mpc_frame = 0
+    self.sway = 0.0
 
   def setup_mpc(self, steer_rate_cost):
     self.libmpc = libmpc_py.libmpc
@@ -115,6 +148,30 @@ class LatControl(object):
 
   def reset(self):
     self.pid.reset()
+
+  def roll_tune(self, CP):
+    self.mpc_frame += 1
+    sway_index = self.mpc_frame % 1400
+    if sway_index < 180:
+      self.sway = (self.sine_wave[sway_index * 2]) * 0.25
+    elif 180 <= sway_index < 540:
+      self.sway = (self.sine_wave[sway_index - 180]) * 0.25
+    elif 540 <= sway_index < 630:
+      self.sway = (self.sine_wave[sway_index - 540] * 4) * 0.35
+
+    if self.mpc_frame % 33 == 0:
+      self.resistanceIndex += 1
+      self.resistance = CP.steerResistance * (1.0 + 0.5 * self.sine_wave[self.resistanceIndex % 360])
+      self.accel_limit = 1.0 / self.resistance
+    if self.mpc_frame % 41 == 0:
+      self.reactanceIndex += 1
+      self.reactance = CP.steerReactance * (1.0 + 0.5 * self.sine_wave[self.reactanceIndex % 360])
+      self.projection_factor = self.reactance * CP.steerActuatorDelay
+    if self.mpc_frame % 51 == 0:
+      self.inductanceIndex += 1
+      self.inductance = CP.steerInductance * (1.0 + 0.5 * self.sine_wave[self.inductanceIndex % 360])
+      self.smooth_factor = self.inductance * CP.steerActuatorDelay / _DT
+      #self.pid.k_f = CP.steerKf * self.inductance
 
   def update(self, active, v_ego, angle_steers, angle_rate, steer_override, d_poly, angle_offset, CP, VM, PL):
     self.mpc_updated = False
@@ -201,6 +258,8 @@ class LatControl(object):
       self.cur_state[0].delta = math.radians(angle_steers - angle_offset) / CP.steerRatio
     else:
       cur_time = sec_since_boot()
+
+      self.roll_tune(CP)
 
       # Interpolate desired angle between MPC updates
       self.angle_steers_des = np.interp(cur_time, self.mpc_times, self.mpc_angles)
