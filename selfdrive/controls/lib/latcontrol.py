@@ -36,11 +36,11 @@ class LatControl(object):
 
     if CP.steerResistance > 0 and CP.steerReactance >= 0 and CP.steerInductance > 0:
 
-      KpV = [np.interp(25.0, CP.steerKpBP, CP.steerKpV) * 0.8]
-      KiV = [np.interp(25.0, CP.steerKiBP, CP.steerKiV) * 0.8]
+      self.KpV = np.interp(25.0, CP.steerKpBP, CP.steerKpV) * 0.8
+      self.KiV = np.interp(25.0, CP.steerKiBP, CP.steerKiV) * 0.8
       Kf = CP.steerKf * CP.steerInductance
-      self.pid = PIController(([0.], KpV),
-                              ([0.], KiV),
+      self.pid = PIController(([0.], [self.KpV * CP.steerReactance]),
+                              ([0.], [self.KiV * CP.steerReactance]),
                               k_f=Kf, pos_limit=1.0)
       self.smooth_factor = CP.steerInductance * CP.steerActuatorDelay / _DT    # Multiplier for inductive component (feed forward)
       self.projection_factor = CP.steerReactance * CP.steerActuatorDelay       # Mutiplier for reactive component (PI)
@@ -167,13 +167,15 @@ class LatControl(object):
       self.accel_limit = 1.0 / self.resistance
     if self.mpc_frame % 41 == 0:
       self.reactanceIndex += 1
-      self.reactance = CP.steerReactance * (1.0 + 0.5 * self.sine_wave[self.reactanceIndex % 360])
+      self.reactance = CP.steerReactance * (1.0 + 0.25 * self.sine_wave[self.reactanceIndex % 360])
       self.projection_factor = self.reactance * CP.steerActuatorDelay
+      self.pid._k_p = ([0.], [self.KpV * self.reactance])
+      self.pid._k_i = ([0.], [self.KiV * self.reactance])
     if self.mpc_frame % 51 == 0:
       self.inductanceIndex += 1
-      self.inductance = CP.steerInductance * (1.0 + 0.5 * self.sine_wave[self.inductanceIndex % 360])
+      self.inductance = CP.steerInductance * (1.0 + 0.25 * self.sine_wave[self.inductanceIndex % 360])
       self.smooth_factor = self.inductance * CP.steerActuatorDelay / _DT
-      #self.pid.k_f = CP.steerKf * self.inductance
+      self.pid.k_f = CP.steerKf * self.inductance
 
   def update(self, active, v_ego, angle_steers, angle_rate, steer_override, d_poly, angle_offset, CP, VM, PL):
     self.mpc_updated = False
