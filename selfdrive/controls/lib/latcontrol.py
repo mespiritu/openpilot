@@ -64,6 +64,7 @@ class LatControl(object):
     self.resistanceIndex = 0
     self.inductanceIndex = 0
     self.reactanceIndex = 0
+    self.sway = 0.0
     self.feed_forward = 0.0
     self.steerActuatorDelay = CP.steerActuatorDelay
     self.last_cloudlog_t = 0.0
@@ -125,11 +126,13 @@ class LatControl(object):
                       -0.309, -0.2924, -0.2756, -0.2588, -0.2419, -0.225, -0.2079, -0.1908, -0.1736, -0.1564, -0.1392, -0.1219, -0.1045, -0.0872,
                       -0.0698, -0.0523, -0.0349, -0.0175, 0.0]
 
+    self.influxString = 'steerData3,testName=none,active=%s,ff_type=%s ff_type_a=%s,ff_type_r=%s,sway=%s,reactance=%s,inductance=%s,resistance=%s,eonToFront=%s,' \
+                    'mpc_age=%s,angle_rate=%s,angle_steers=%s,angle_steers_des=%s,angle_steers_des_mpc=%s,v_ego=%s,p=%s,i=%s,f=%s %s\n~'
+
     self.steerdata = self.influxString
     self.frames = 0
     self.curvature_factor = 0.0
     self.mpc_frame = 0
-    self.sway = 0.0
 
   def setup_mpc(self, steer_rate_cost):
     self.libmpc = libmpc_py.libmpc
@@ -319,18 +322,10 @@ class LatControl(object):
       capture_all = True
       if self.mpc_updated or capture_all:
         self.frames += 1
-        self.steerdata += ("%d,%s,%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d|" % (1, \
-        ff_type, 1 if ff_type == "a" else 0, 1 if ff_type == "r" else 0, steer_status, steering_control_active, steer_stock_torque, steer_stock_torque_request, \
-        CP.steerReactance,CP.steerInductance,CP.steerResistance,CP.eonToFront, cur_time - float(self.last_mpc_ts / 1000000000.0), cur_time - self.mpc_times[0], self.left_change, self.path_change, self.right_change, self.mpc_solution[0].delta[0], self.mpc_solution[0].delta[1], self.mpc_solution[0].delta[2], self.mpc_solution[0].delta[3], self.mpc_solution[0].delta[4], \
-        self.mpc_solution[0].delta[5], self.mpc_solution[0].delta[6], self.mpc_solution[0].delta[7], self.mpc_solution[0].delta[8], self.mpc_solution[0].delta[9], \
-        self.mpc_solution[0].delta[10], self.mpc_solution[0].delta[11], self.mpc_solution[0].delta[12], self.mpc_solution[0].delta[13], self.mpc_solution[0].delta[14], \
-        self.mpc_solution[0].delta[15], self.mpc_solution[0].delta[16], self.mpc_solution[0].delta[17], self.mpc_solution[0].delta[18], self.mpc_solution[0].delta[19], self.mpc_solution[0].delta[20], \
-        self.accel_limit, float(restricted_steer_rate), float(driver_torque), self.angle_rate_desired, self.projected_angle_steers, float(angle_rate), \
-        angle_steers, self.angle_steers_des, self.mpc_angles[1], projected_angle_steers_des, self.observed_ratio, PL.PP.l_prob, PL.PP.r_prob, PL.PP.c_prob, PL.PP.p_prob, \
-        self.l_poly[0], self.l_poly[1], self.l_poly[2], self.l_poly[3], self.r_poly[0], self.r_poly[1], self.r_poly[2], self.r_poly[3], \
-        self.p_poly[0], self.p_poly[1], self.p_poly[2], self.p_poly[3], PL.PP.c_poly[0], PL.PP.c_poly[1], PL.PP.c_poly[2], PL.PP.c_poly[3], \
-        PL.PP.d_poly[0], PL.PP.d_poly[1], PL.PP.d_poly[2], PL.PP.lane_width, PL.PP.lane_width_estimate, PL.PP.lane_width_certainty, v_ego, \
-        self.pid.p, self.pid.i, self.pid.f, int(time.time() * 100) * 10000000))
+        self.steerdata += ("%d,%s,%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d|" % \
+          (1, ff_type, 1 if ff_type == "a" else 0, 1 if ff_type == "r" else 0, self.sway, self.reactance,self.inductance,self.resistance,CP.eonToFront, \
+          cur_time - float(self.last_mpc_ts / 1000000000.0), float(angle_rate), angle_steers, self.angle_steers_des, self.mpc_angles[1], v_ego, \
+          self.pid.p, self.pid.i, self.pid.f, int(time.time() * 100) * 10000000))
 
     self.sat_flag = self.pid.saturated
     self.prev_angle_rate = angle_rate

@@ -38,8 +38,8 @@ class PathPlanner(object):
         lateral_error = 0.0
 
       # only offset left and right lane lines; offsetting p_poly does not make sense
-      l_poly[3] += CAMERA_OFFSET - lateral_error
-      r_poly[3] += CAMERA_OFFSET - lateral_error
+      l_poly[3] += CAMERA_OFFSET - lateral_error - LaC.sway
+      r_poly[3] += CAMERA_OFFSET - lateral_error - LaC.sway
 
       p_prob = 1.  # model does not tell this probability yet, so set to 1 for now
       l_prob = md.model.leftLane.prob  # left line prob
