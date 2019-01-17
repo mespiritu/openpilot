@@ -64,7 +64,6 @@ class LatControl(object):
     self.resistanceIndex = 0
     self.inductanceIndex = 0
     self.reactanceIndex = 0
-    self.sway = 0.0
     self.feed_forward = 0.0
     self.steerActuatorDelay = CP.steerActuatorDelay
     self.last_cloudlog_t = 0.0
@@ -152,15 +151,15 @@ class LatControl(object):
   def reset(self):
     self.pid.reset()
 
-  def roll_tune(self, CP):
+  def roll_tune(self, CP, PL):
     self.mpc_frame += 1
     sway_index = self.mpc_frame % 1400
     if sway_index < 180:
-      self.sway = (self.sine_wave[sway_index * 2]) * 0.25
+      PL.PP.sway = (self.sine_wave[sway_index * 2]) * 0.35
     elif 180 <= sway_index < 540:
-      self.sway = (self.sine_wave[sway_index - 180]) * 0.25
+      PL.PP.sway = (self.sine_wave[sway_index - 180]) * 0.25
     elif 540 <= sway_index < 630:
-      self.sway = (self.sine_wave[sway_index - 540] * 4) * 0.35
+      PL.PP.sway = (self.sine_wave[(sway_index - 540) * 4]) * 0.55
 
     if self.mpc_frame % 33 == 0:
       self.resistanceIndex += 1
@@ -262,7 +261,7 @@ class LatControl(object):
     else:
       cur_time = sec_since_boot()
 
-      self.roll_tune(CP)
+      self.roll_tune(CP, PL)
 
       # Interpolate desired angle between MPC updates
       self.angle_steers_des = np.interp(cur_time, self.mpc_times, self.mpc_angles)
@@ -323,7 +322,7 @@ class LatControl(object):
       if self.mpc_updated or capture_all:
         self.frames += 1
         self.steerdata += ("%d,%s,%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d|" % \
-          (1, ff_type, 1 if ff_type == "a" else 0, 1 if ff_type == "r" else 0, self.sway, self.reactance,self.inductance,self.resistance,CP.eonToFront, \
+          (1, ff_type, 1 if ff_type == "a" else 0, 1 if ff_type == "r" else 0, PL.PP.sway, self.reactance,self.inductance,self.resistance,CP.eonToFront, \
           cur_time - float(self.last_mpc_ts / 1000000000.0), float(angle_rate), angle_steers, self.angle_steers_des, self.mpc_angles[1], v_ego, \
           self.pid.p, self.pid.i, self.pid.f, int(time.time() * 100) * 10000000))
 
