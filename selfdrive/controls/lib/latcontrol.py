@@ -13,7 +13,7 @@ from cereal import car
 
 _DT = 0.01    # 100Hz
 _DT_MPC = 0.05  # 20Hz
-_tuning_stage = 1
+_tuning_stage = 0
 
 def calc_states_after_delay(states, v_ego, steer_angle, curvature_factor, steer_ratio, delay, long_camera_offset):
   states[0].x = max(0.0, v_ego * delay + long_camera_offset)
@@ -171,23 +171,35 @@ class LatControl(object):
         self.smooth_factor = self.inductance * CP.steerActuatorDelay / _DT
         self.pid.k_f = CP.steerKf * self.inductance
     elif _tuning_stage == 2:
+      if self.mpc_frame % 100 == 0:
+        self.reactanceIndex += 1
+        self.reactance = CP.steerReactance * (1.0 + 0.3 * self.sine_wave[self.reactanceIndex % 360])
+        self.projection_factor = self.reactance * CP.steerActuatorDelay
+        self.pid._k_p = ([0.], [self.KpV * self.reactance])
+        self.pid._k_i = ([0.], [self.KiV * self.reactance])
+      if self.mpc_frame % 125 == 0:
+        self.inductanceIndex += 1
+        self.inductance = CP.steerInductance * (1.0 + 0.3 * self.sine_wave[self.inductanceIndex % 360])
+        self.smooth_factor = self.inductance * CP.steerActuatorDelay / _DT
+        self.pid.k_f = CP.steerKf * self.inductance
+    elif _tuning_stage == 3:
+      if self.mpc_frame % 150 == 0:
+        self.inductanceIndex += 1
+        self.inductance = CP.steerInductance * (1.0 + 0.3 * self.sine_wave[self.inductanceIndex % 360])
+        self.smooth_factor = self.inductance * CP.steerActuatorDelay / _DT
+        self.pid.k_f = CP.steerKf * self.inductance
+    elif _tuning_stage == 4:
       if self.mpc_frame % 150 == 0:
         self.reactanceIndex += 1
         self.reactance = CP.steerReactance * (1.0 + 0.3 * self.sine_wave[self.reactanceIndex % 360])
         self.projection_factor = self.reactance * CP.steerActuatorDelay
         self.pid._k_p = ([0.], [self.KpV * self.reactance])
         self.pid._k_i = ([0.], [self.KiV * self.reactance])
-      if self.mpc_frame % 200 == 0:
-        self.inductanceIndex += 1
-        self.inductance = CP.steerInductance * (1.0 + 0.3 * self.sine_wave[self.inductanceIndex % 360])
-        self.smooth_factor = self.inductance * CP.steerActuatorDelay / _DT
-        self.pid.k_f = CP.steerKf * self.inductance
-    elif _tuning_stage == 3:
-      if self.mpc_frame % 500 == 0:
-        self.inductanceIndex += 1
-        self.inductance = CP.steerInductance * (1.0 + 0.2 * self.sine_wave[self.inductanceIndex % 360])
-        self.smooth_factor = self.inductance * CP.steerActuatorDelay / _DT
-        self.pid.k_f = CP.steerKf * self.inductance
+    elif _tuning_stage == 5:
+      if self.mpc_frame % 150 == 0:
+        self.resistanceIndex += 1
+        self.resistance = CP.steerResistance * (1.0 + 0.3 * self.sine_wave[self.resistanceIndex % 360])
+        self.accel_limit = 1.0 / self.resistance
 
   def update(self, active, v_ego, angle_steers, angle_rate, steer_override, d_poly, angle_offset, CP, VM, PL):
     self.mpc_updated = False
@@ -275,7 +287,7 @@ class LatControl(object):
     else:
       cur_time = sec_since_boot()
 
-      #self.roll_tune(CP, PL)
+      if v_ego > 25 and _tuning_stage > 0: self.roll_tune(CP, PL)
 
       # Interpolate desired angle between MPC updates
       self.angle_steers_des = np.interp(cur_time, self.mpc_times, self.mpc_angles)
