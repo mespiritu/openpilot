@@ -241,7 +241,7 @@ class CarState(object):
 
     self.gear = 0 if self.CP.carFingerprint == CAR.CIVIC else cp.vl["GEARBOX"]['GEAR']
     if self.CP.carFingerprint in  (CAR.CIVIC, CAR.ODYSSEY, CAR.CRV_5G, CAR.ACCORD, CAR.ACCORD_15, CAR.ACCORDH, CAR.CIVIC_HATCH):
-      self.angle_steers = cp.vl["STEERING_SENSORS"]['STEER_ANGLE'] + cp.vl["STEERING_SENSORS"]['STEER_ANGLE_OFFSET']
+      self.angle_steers = cp.vl["STEERING_SENSORS"]['STEER_ANGLE']
     else:
       self.angle_steers = cp.vl["STEERING_SENSORS"]['STEER_ANGLE']
 
