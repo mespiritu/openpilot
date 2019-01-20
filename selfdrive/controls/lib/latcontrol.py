@@ -13,7 +13,7 @@ from cereal import car
 
 _DT = 0.01    # 100Hz
 _DT_MPC = 0.05  # 20Hz
-_tuning_stage = 0
+_tuning_stage = 1
 
 def calc_states_after_delay(states, v_ego, steer_angle, curvature_factor, steer_ratio, delay, long_camera_offset):
   states[0].x = max(0.0, v_ego * delay + long_camera_offset)
@@ -37,14 +37,14 @@ class LatControl(object):
 
     if CP.steerResistance > 0 and CP.steerReactance >= 0 and CP.steerInductance > 0:
 
-      self.KpV = np.interp(25.0, CP.steerKpBP, CP.steerKpV) * 0.8
-      self.KiV = np.interp(25.0, CP.steerKiBP, CP.steerKiV) * 0.8
+      self.KpV = np.interp(25.0, CP.steerKpBP, CP.steerKpV)
+      self.KiV = np.interp(25.0, CP.steerKiBP, CP.steerKiV)
       Kf = CP.steerKf * CP.steerInductance
       self.pid = PIController(([0.], [self.KpV * CP.steerReactance]),
                               ([0.], [self.KiV * CP.steerReactance]),
                               k_f=Kf, pos_limit=1.0)
-      self.smooth_factor = CP.steerInductance * CP.steerActuatorDelay / _DT    # Multiplier for inductive component (feed forward)
-      self.projection_factor = CP.steerReactance * CP.steerActuatorDelay       # Mutiplier for reactive component (PI)
+      self.smooth_factor = CP.steerInductance * 2.0 * CP.steerActuatorDelay / _DT    # Multiplier for inductive component (feed forward)
+      self.projection_factor = CP.steerReactance * 0.5 * CP.steerActuatorDelay       # Mutiplier for reactive component (PI)
       self.accel_limit = 1.0 / CP.steerResistance                              # Desired acceleration limit to prevent "whip steer" (resistive component)
       self.ff_angle_factor = 0.5                                               # Kf multiplier for angle-based feed forward
       self.ff_rate_factor = 5.0                                                # Kf multiplier for rate-based feed forward
@@ -148,11 +148,11 @@ class LatControl(object):
     self.mpc_frame += 1
     sway_index = self.mpc_frame % 1400
     if sway_index < 180:
-      PL.PP.sway = (self.sine_wave[sway_index * 2]) * 0.35
+      PL.PP.sway = (self.sine_wave[sway_index * 2]) * 0.25
     elif 180 <= sway_index < 540:
       PL.PP.sway = (self.sine_wave[sway_index - 180]) * 0.25
     elif 540 <= sway_index < 630:
-      PL.PP.sway = (self.sine_wave[(sway_index - 540) * 4]) * 0.55
+      PL.PP.sway = (self.sine_wave[(sway_index - 540) * 4]) * 0.25
 
     if _tuning_stage == 1:
       if self.mpc_frame % 30 == 0:
@@ -162,37 +162,37 @@ class LatControl(object):
       if self.mpc_frame % 40 == 0:
         self.reactanceIndex += 1
         self.reactance = CP.steerReactance * (1.0 + 0.5 * self.sine_wave[self.reactanceIndex % 360])
-        self.projection_factor = self.reactance * CP.steerActuatorDelay
+        self.projection_factor = self.reactance * 0.5 * CP.steerActuatorDelay
         self.pid._k_p = ([0.], [self.KpV * self.reactance])
         self.pid._k_i = ([0.], [self.KiV * self.reactance])
       if self.mpc_frame % 50 == 0:
         self.inductanceIndex += 1
         self.inductance = CP.steerInductance * (1.0 + 0.5 * self.sine_wave[self.inductanceIndex % 360])
-        self.smooth_factor = self.inductance * CP.steerActuatorDelay / _DT
+        self.smooth_factor = self.inductance * 2.0 * CP.steerActuatorDelay / _DT
         self.pid.k_f = CP.steerKf * self.inductance
     elif _tuning_stage == 2:
       if self.mpc_frame % 100 == 0:
         self.reactanceIndex += 1
         self.reactance = CP.steerReactance * (1.0 + 0.3 * self.sine_wave[self.reactanceIndex % 360])
-        self.projection_factor = self.reactance * CP.steerActuatorDelay
+        self.projection_factor = self.reactance * 0.5 * CP.steerActuatorDelay
         self.pid._k_p = ([0.], [self.KpV * self.reactance])
         self.pid._k_i = ([0.], [self.KiV * self.reactance])
       if self.mpc_frame % 125 == 0:
         self.inductanceIndex += 1
         self.inductance = CP.steerInductance * (1.0 + 0.3 * self.sine_wave[self.inductanceIndex % 360])
-        self.smooth_factor = self.inductance * CP.steerActuatorDelay / _DT
+        self.smooth_factor = self.inductance * 2.0 * CP.steerActuatorDelay / _DT
         self.pid.k_f = CP.steerKf * self.inductance
     elif _tuning_stage == 3:
       if self.mpc_frame % 150 == 0:
         self.inductanceIndex += 1
         self.inductance = CP.steerInductance * (1.0 + 0.3 * self.sine_wave[self.inductanceIndex % 360])
-        self.smooth_factor = self.inductance * CP.steerActuatorDelay / _DT
+        self.smooth_factor = self.inductance * 2.0 * CP.steerActuatorDelay / _DT
         self.pid.k_f = CP.steerKf * self.inductance
     elif _tuning_stage == 4:
       if self.mpc_frame % 150 == 0:
         self.reactanceIndex += 1
         self.reactance = CP.steerReactance * (1.0 + 0.3 * self.sine_wave[self.reactanceIndex % 360])
-        self.projection_factor = self.reactance * CP.steerActuatorDelay
+        self.projection_factor = self.reactance * 0.5 * CP.steerActuatorDelay
         self.pid._k_p = ([0.], [self.KpV * self.reactance])
         self.pid._k_i = ([0.], [self.KiV * self.reactance])
     elif _tuning_stage == 5:
@@ -329,7 +329,7 @@ class LatControl(object):
 
       # Use projected desired and actual angles instead of "current" values, in order to make PI more reactive (for resonance)
       output_steer = self.pid.update(projected_angle_steers_des, self.projected_angle_steers, check_saturation=(v_ego > 10), override=steer_override,
-                                     feedforward=self.feed_forward, speed=v_ego, deadzone=deadzone)
+                                     feedforward=self.feed_forward, speed=v_ego, deadzone=deadzone, freeze_integrator=(_tuning_stage != 0))
 
       # Hide angle error if being overriden
       if steer_override:
