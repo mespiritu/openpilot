@@ -11,6 +11,7 @@ class PathPlanner(object):
     self.c_poly = [0., 0., 0., 0.]
     self.c_prob = 0.
     self.sway = 0.0
+    self.lane_adjust = 0.0
     self.last_model = 0.
     self.lead_dist, self.lead_prob, self.lead_var = 0, 0, 1
     self._path_pinv = compute_path_pinv()
@@ -37,10 +38,11 @@ class PathPlanner(object):
           lateral_error = 0.0
       except:
         lateral_error = 0.0
-        
+
       # only offset left and right lane lines; offsetting p_poly does not make sense
-      l_poly[3] += CAMERA_OFFSET - lateral_error - self.sway
-      r_poly[3] += CAMERA_OFFSET - lateral_error - self.sway
+      lane_change_offset = self.lane_adjust * (l_poly[3] + r_poly[3]) / 2.0
+      l_poly[3] += CAMERA_OFFSET - lateral_error - self.sway - lane_change_offset
+      r_poly[3] += CAMERA_OFFSET - lateral_error - self.sway - lane_change_offset
 
       p_prob = 1.  # model does not tell this probability yet, so set to 1 for now
       l_prob = md.model.leftLane.prob  # left line prob

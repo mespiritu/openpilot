@@ -13,7 +13,7 @@ from cereal import car
 
 _DT = 0.01    # 100Hz
 _DT_MPC = 0.05  # 20Hz
-_tuning_stage = 1
+_tuning_stage = 0
 
 def calc_states_after_delay(states, v_ego, steer_angle, curvature_factor, steer_ratio, delay, long_camera_offset):
   states[0].x = max(0.0, v_ego * delay + long_camera_offset)
@@ -87,13 +87,17 @@ class LatControl(object):
     self.rough_steers_rate_increment = 0.0
     self.prev_angle_steers = 0.0
     self.calculate_rate = True
+    self.lane_change_rate = 0.0
+    self.prev_lane_offset = 0.0
+    self.prev_lane_offset_time = 0.0
+    self.lane_offset_adjustment = 0.0
 
     # variables for dashboarding
     self.context = zmq.Context()
     self.steerpub = self.context.socket(zmq.PUB)
     self.steerpub.bind("tcp://*:8594")
     self.influxString = 'steerData3,testName=none,active=%s,ff_type=%s ff_type_a=%s,ff_type_r=%s,sway=%s,reactance=%s,inductance=%s,resistance=%s,eonToFront=%s,' \
-                    'mpc_age=%s,angle_rate=%s,angle_steers=%s,angle_steers_des=%s,angle_steers_des_mpc=%s,v_ego=%s,p=%s,i=%s,f=%s %s\n~'
+           'prev_lane_offset=%s,lane_offset_adjustment=%s,lane_change_rate=%s,mpc_age=%s,angle_rate=%s,angle_steers=%s,angle_steers_des=%s,angle_steers_des_mpc=%s,v_ego=%s,c_poly[3]=%s,l_poly[3]=%s,r_poly[3]=%s,p=%s,i=%s,f=%s %s\n~'
 
 
     self.sine_wave = [ 0.0175, 0.0349, 0.0523, 0.0698, 0.0872, 0.1045, 0.1219, 0.1392, 0.1564, 0.1736, 0.1908, 0.2079, 0.225, 0.2419, 0.2588, 0.2756,
@@ -238,12 +242,44 @@ class LatControl(object):
 
       self.l_poly = libmpc_py.ffi.new("double[4]", list(PL.PP.l_poly))
       self.r_poly = libmpc_py.ffi.new("double[4]", list(PL.PP.r_poly))
+      self.c_poly = libmpc_py.ffi.new("double[4]", list(PL.PP.c_poly))
       self.p_poly = libmpc_py.ffi.new("double[4]", list(PL.PP.p_poly))
 
       # account for actuation delay and the age of the plan
       self.cur_state = calc_states_after_delay(self.cur_state, v_ego, self.projected_angle_steers, self.curvature_factor, CP.steerRatio, total_delay, CP.eonToFront)
 
       v_ego_mpc = max(v_ego, 5.0)  # avoid mpc roughness due to low speed
+
+      if steer_override or self.prev_lane_offset_time > 0:
+        if self.prev_lane_offset_time == 0:
+          # capture lane offset in case of lane change
+          self.prev_lane_offset_time = cur_time
+          self.prev_lane_offset = self.c_poly[3]
+          self.lane_change_rate = 0.0
+        elif abs(self.c_poly[3]) > 0.2 and self.lane_change_rate == 0.0:
+          # lane change has begun!
+          self.lane_change_rate = (self.c_poly[3] - self.prev_lane_offset) / (cur_time - self.prev_lane_offset_time)
+        if self.lane_change_rate != 0.0 and abs(self.c_poly[3]) > 0.2 and abs(self.lane_offset_adjustment) < 1.0:
+          # lane change is occuring, start hiding the offset from MPC
+          self.lane_offset_adjustment = min(1.0, (abs(self.c_poly[3]) - 0.5) / 0.25)
+      if self.lane_offset_adjustment == 1.0 \
+        and self.lane_change_rate < 0 != self.c_poly[3] < 0 \
+        and abs(self.c_poly[3]) > 0.5:
+        # lane change is mostly done
+        self.lane_offset_adjustment = -1.0
+      elif (self.lane_offset_adjustment == -1.0 and abs(self.c_poly[3]) < 0.1) or cur_time - self.prev_lane_offset_time > 5:
+        # lane change has completed OR it was aborted
+        self.prev_lane_offset_time = 0.0
+        self.prev_lane_offset = 0.0
+        self.lane_change_rate = 0.0
+        self.lane_offset_adjustment = 0.0
+
+      # hide lane change offset from MPC
+      #PL.PP.lane_adjust = abs(self.lane_offset_adjustment)
+      #self.l_poly[3] = self.l_poly[3] - self.c_poly[3] * abs(self.lane_offset_adjustment)
+      #self.r_poly[3] = self.r_poly[3] - self.c_poly[3] * abs(self.lane_offset_adjustment)
+      #self.p_poly[3] = self.p_poly[3] - self.c_poly[3] * abs(self.lane_offset_adjustment)
+
       self.libmpc.run_mpc(self.cur_state, self.mpc_solution,
                           self.l_poly, self.r_poly, self.p_poly,
                           PL.PP.l_prob, PL.PP.r_prob, PL.PP.p_prob, self.curvature_factor, v_ego_mpc, PL.PP.lane_width)
@@ -253,15 +289,25 @@ class LatControl(object):
       #  Check for infeasable MPC solution
       self.mpc_nans = np.any(np.isnan(list(self.mpc_solution[0].delta)))
       if not self.mpc_nans:
-        self.mpc_angles = [self.angle_steers_des,
-                          float(math.degrees(self.mpc_solution[0].delta[1] * CP.steerRatio) + angle_offset),
-                          float(math.degrees(self.mpc_solution[0].delta[2] * CP.steerRatio) + angle_offset)]
+        if abs(self.lane_offset_adjustment) == 1.0:
+          self.mpc_angles = [self.angle_steers_des,
+                            angle_steers,
+                            angle_steers]
 
-        self.mpc_times = [self.angle_steers_des_time,
-                          mpc_time + _DT_MPC,
-                          mpc_time + _DT_MPC + _DT_MPC]
+          self.mpc_times = [self.angle_steers_des_time,
+                            mpc_time + _DT_MPC + _DT_MPC,
+                            mpc_time + _DT_MPC + _DT_MPC]
+          self.angle_steers_des_mpc = angle_steers
+        else:
+          self.mpc_angles = [self.angle_steers_des,
+                            float(math.degrees(self.mpc_solution[0].delta[1] * CP.steerRatio) + angle_offset),
+                            float(math.degrees(self.mpc_solution[0].delta[2] * CP.steerRatio) + angle_offset)]
 
-        self.angle_steers_des_mpc = self.mpc_angles[1]
+          self.mpc_times = [self.angle_steers_des_time,
+                            mpc_time + _DT_MPC,
+                            mpc_time + _DT_MPC + _DT_MPC]
+
+          self.angle_steers_des_mpc = self.mpc_angles[1]
 
       else:
         self.libmpc.init(MPC_COST_LAT.PATH, MPC_COST_LAT.LANE, MPC_COST_LAT.HEADING, CP.steerRateCost)
@@ -287,7 +333,7 @@ class LatControl(object):
     else:
       cur_time = sec_since_boot()
 
-      if v_ego > 25 and _tuning_stage > 0: self.roll_tune(CP, PL)
+      if v_ego > 15 and _tuning_stage > 0: self.roll_tune(CP, PL)
 
       # Interpolate desired angle between MPC updates
       self.angle_steers_des = np.interp(cur_time, self.mpc_times, self.mpc_angles)
@@ -347,10 +393,10 @@ class LatControl(object):
       capture_all = True
       if self.mpc_updated or capture_all:
         self.frames += 1
-        self.steerdata += ("%d,%s,%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d|" % \
+        self.steerdata += ("%d,%s,%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d|" % \
           (1, ff_type, 1 if ff_type == "a" else 0, 1 if ff_type == "r" else 0, PL.PP.sway, self.reactance,self.inductance,self.resistance,CP.eonToFront, \
-          cur_time - float(self.last_mpc_ts / 1000000000.0), float(angle_rate), angle_steers, self.angle_steers_des, self.mpc_angles[1], v_ego, \
-          self.pid.p, self.pid.i, self.pid.f, int(time.time() * 100) * 10000000))
+          self.prev_lane_offset, self.lane_offset_adjustment, self.lane_change_rate, cur_time - float(self.last_mpc_ts / 1000000000.0), float(angle_rate), angle_steers, self.angle_steers_des, self.mpc_angles[1], v_ego, \
+          self.c_poly[3], self.l_poly[3], self.r_poly[3], self.pid.p, self.pid.i, self.pid.f, int(time.time() * 100) * 10000000))
 
     self.sat_flag = self.pid.saturated
     self.prev_angle_rate = angle_rate
