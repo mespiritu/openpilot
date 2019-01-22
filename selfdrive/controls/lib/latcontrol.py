@@ -36,25 +36,24 @@ class LatControl(object):
   def __init__(self, CP):
 
     if CP.steerResistance > 0 and CP.steerReactance >= 0 and CP.steerInductance > 0:
-
-      self.KpV = np.interp(25.0, CP.steerKpBP, CP.steerKpV)
-      self.KiV = np.interp(25.0, CP.steerKiBP, CP.steerKiV)
-      Kf = CP.steerKf * CP.steerInductance
-      self.pid = PIController(([0.], [self.KpV * CP.steerReactance]),
-                              ([0.], [self.KiV * CP.steerReactance]),
-                              k_f=Kf, pos_limit=1.0)
       self.smooth_factor = CP.steerInductance * 2.0 * CP.steerActuatorDelay / _DT    # Multiplier for inductive component (feed forward)
-      self.projection_factor = CP.steerReactance * 0.5 * CP.steerActuatorDelay       # Mutiplier for reactive component (PI)
-      self.accel_limit = 1.0 / CP.steerResistance                              # Desired acceleration limit to prevent "whip steer" (resistive component)
-      self.ff_angle_factor = 0.5                                               # Kf multiplier for angle-based feed forward
-      self.ff_rate_factor = 5.0                                                # Kf multiplier for rate-based feed forward
+      self.projection_factor = CP.steerReactance * CP.steerActuatorDelay / 2.0       # Mutiplier for reactive component (PI)
+      self.accel_limit = 2.0 / CP.steerResistance                                    # Desired acceleration limit to prevent "whip steer" (resistive component)
+      self.ff_angle_factor = 1.0                                                     # Kf multiplier for angle-based feed forward
+      self.ff_rate_factor = 10.0                                                      # Kf multiplier for rate-based feed forward
+      # Eliminate break-points, since they aren't needed (and would cause problems for resonance)
+      KpV = np.interp(25.0, CP.steerKpBP, CP.steerKpV)
+      self.KiV = np.interp(25.0, CP.steerKiBP, CP.steerKiV)
+      self.pid = PIController(([0.], [KpV]),
+                              ([0.], [self.KiV * _DT / self.projection_factor]),
+                              k_f=CP.steerKf, pos_limit=1.0)
     else:
       self.pid = PIController((CP.steerKpBP, CP.steerKpV),
                               (CP.steerKiBP, CP.steerKiV),
                               k_f=CP.steerKf, pos_limit=1.0)
       self.smooth_factor = 1.0                   # Disabled
       self.projection_factor = 0.0               # Disabled
-      self.accel_limit = 99999.9                 # Disabled
+      self.accel_limit = 0.0                     # Disabled
       self.ff_angle_factor = 1.0                 # Disabled
       self.ff_rate_factor = 0.0                  # Disabled
 
@@ -150,60 +149,52 @@ class LatControl(object):
 
   def roll_tune(self, CP, PL):
     self.mpc_frame += 1
-    sway_index = self.mpc_frame % 1400
-    if sway_index < 180:
-      PL.PP.sway = (self.sine_wave[sway_index * 2]) * 0.25
-    elif 180 <= sway_index < 540:
-      PL.PP.sway = (self.sine_wave[sway_index - 180]) * 0.25
-    elif 540 <= sway_index < 630:
-      PL.PP.sway = (self.sine_wave[(sway_index - 540) * 4]) * 0.25
+    sway_index = self.mpc_frame % 2000
+    if sway_index < 90:
+      PL.PP.sway = (self.sine_wave[sway_index * 2]) * 0.35
+    elif 90 <= sway_index < 180:
+      PL.PP.sway = -(self.sine_wave[(sway_index - 180) * 4]) * 0.45
 
     if _tuning_stage == 1:
-      if self.mpc_frame % 30 == 0:
+      if self.mpc_frame % 40 == 0:
         self.resistanceIndex += 1
         self.resistance = CP.steerResistance * (1.0 + 0.5 * self.sine_wave[self.resistanceIndex % 360])
-        self.accel_limit = 1.0 / self.resistance
-      if self.mpc_frame % 40 == 0:
+        self.accel_limit = 2.0 / self.resistance
+      if self.mpc_frame % 50 == 0:
         self.reactanceIndex += 1
         self.reactance = CP.steerReactance * (1.0 + 0.5 * self.sine_wave[self.reactanceIndex % 360])
-        self.projection_factor = self.reactance * 0.5 * CP.steerActuatorDelay
-        self.pid._k_p = ([0.], [self.KpV * self.reactance])
-        self.pid._k_i = ([0.], [self.KiV * self.reactance])
-      if self.mpc_frame % 50 == 0:
+        self.projection_factor = self.reactance * CP.steerActuatorDelay / 2.0
+        self.pid._k_i = ([0.], [self.KiV * _DT / self.projection_factor])
+      if self.mpc_frame % 60 == 0:
         self.inductanceIndex += 1
         self.inductance = CP.steerInductance * (1.0 + 0.5 * self.sine_wave[self.inductanceIndex % 360])
         self.smooth_factor = self.inductance * 2.0 * CP.steerActuatorDelay / _DT
-        self.pid.k_f = CP.steerKf * self.inductance
     elif _tuning_stage == 2:
       if self.mpc_frame % 100 == 0:
         self.reactanceIndex += 1
         self.reactance = CP.steerReactance * (1.0 + 0.3 * self.sine_wave[self.reactanceIndex % 360])
-        self.projection_factor = self.reactance * 0.5 * CP.steerActuatorDelay
-        self.pid._k_p = ([0.], [self.KpV * self.reactance])
-        self.pid._k_i = ([0.], [self.KiV * self.reactance])
+        self.projection_factor = self.reactance * CP.steerActuatorDelay / 2.0
+        self.pid._k_i = ([0.], [self.KiV * _DT / self.projection_factor])
       if self.mpc_frame % 125 == 0:
         self.inductanceIndex += 1
         self.inductance = CP.steerInductance * (1.0 + 0.3 * self.sine_wave[self.inductanceIndex % 360])
         self.smooth_factor = self.inductance * 2.0 * CP.steerActuatorDelay / _DT
-        self.pid.k_f = CP.steerKf * self.inductance
     elif _tuning_stage == 3:
+      if self.mpc_frame % 150 == 0:
+        self.reactanceIndex += 1
+        self.reactance = CP.steerReactance * (1.0 + 0.3 * self.sine_wave[self.reactanceIndex % 360])
+        self.projection_factor = self.reactance * CP.steerActuatorDelay / 2.0
+        self.pid._k_i = ([0.], [self.KiV * _DT / self.projection_factor])
+    elif _tuning_stage == 4:
       if self.mpc_frame % 150 == 0:
         self.inductanceIndex += 1
         self.inductance = CP.steerInductance * (1.0 + 0.3 * self.sine_wave[self.inductanceIndex % 360])
         self.smooth_factor = self.inductance * 2.0 * CP.steerActuatorDelay / _DT
-        self.pid.k_f = CP.steerKf * self.inductance
-    elif _tuning_stage == 4:
-      if self.mpc_frame % 150 == 0:
-        self.reactanceIndex += 1
-        self.reactance = CP.steerReactance * (1.0 + 0.3 * self.sine_wave[self.reactanceIndex % 360])
-        self.projection_factor = self.reactance * 0.5 * CP.steerActuatorDelay
-        self.pid._k_p = ([0.], [self.KpV * self.reactance])
-        self.pid._k_i = ([0.], [self.KiV * self.reactance])
     elif _tuning_stage == 5:
       if self.mpc_frame % 150 == 0:
         self.resistanceIndex += 1
         self.resistance = CP.steerResistance * (1.0 + 0.3 * self.sine_wave[self.resistanceIndex % 360])
-        self.accel_limit = 1.0 / self.resistance
+        self.accel_limit = 2.0 / self.resistance
 
   def update(self, active, v_ego, angle_steers, angle_rate, steer_override, d_poly, angle_offset, CP, VM, PL):
     self.mpc_updated = False
@@ -250,36 +241,6 @@ class LatControl(object):
 
       v_ego_mpc = max(v_ego, 5.0)  # avoid mpc roughness due to low speed
 
-      if steer_override or self.prev_lane_offset_time > 0:
-        if self.prev_lane_offset_time == 0:
-          # capture lane offset in case of lane change
-          self.prev_lane_offset_time = cur_time
-          self.prev_lane_offset = self.c_poly[3]
-          self.lane_change_rate = 0.0
-        elif abs(self.c_poly[3]) > 0.2 and self.lane_change_rate == 0.0:
-          # lane change has begun!
-          self.lane_change_rate = (self.c_poly[3] - self.prev_lane_offset) / (cur_time - self.prev_lane_offset_time)
-        if self.lane_change_rate != 0.0 and abs(self.c_poly[3]) > 0.2 and abs(self.lane_offset_adjustment) < 1.0:
-          # lane change is occuring, start hiding the offset from MPC
-          self.lane_offset_adjustment = min(1.0, (abs(self.c_poly[3]) - 0.5) / 0.25)
-      if self.lane_offset_adjustment == 1.0 \
-        and self.lane_change_rate < 0 != self.c_poly[3] < 0 \
-        and abs(self.c_poly[3]) > 0.5:
-        # lane change is mostly done
-        self.lane_offset_adjustment = -1.0
-      elif (self.lane_offset_adjustment == -1.0 and abs(self.c_poly[3]) < 0.1) or cur_time - self.prev_lane_offset_time > 5:
-        # lane change has completed OR it was aborted
-        self.prev_lane_offset_time = 0.0
-        self.prev_lane_offset = 0.0
-        self.lane_change_rate = 0.0
-        self.lane_offset_adjustment = 0.0
-
-      # hide lane change offset from MPC
-      #PL.PP.lane_adjust = abs(self.lane_offset_adjustment)
-      #self.l_poly[3] = self.l_poly[3] - self.c_poly[3] * abs(self.lane_offset_adjustment)
-      #self.r_poly[3] = self.r_poly[3] - self.c_poly[3] * abs(self.lane_offset_adjustment)
-      #self.p_poly[3] = self.p_poly[3] - self.c_poly[3] * abs(self.lane_offset_adjustment)
-
       self.libmpc.run_mpc(self.cur_state, self.mpc_solution,
                           self.l_poly, self.r_poly, self.p_poly,
                           PL.PP.l_prob, PL.PP.r_prob, PL.PP.p_prob, self.curvature_factor, v_ego_mpc, PL.PP.lane_width)
@@ -289,25 +250,15 @@ class LatControl(object):
       #  Check for infeasable MPC solution
       self.mpc_nans = np.any(np.isnan(list(self.mpc_solution[0].delta)))
       if not self.mpc_nans:
-        if abs(self.lane_offset_adjustment) == 1.0:
-          self.mpc_angles = [self.angle_steers_des,
-                            angle_steers,
-                            angle_steers]
+        self.mpc_angles = [self.angle_steers_des,
+                          float(math.degrees(self.mpc_solution[0].delta[1] * CP.steerRatio) + angle_offset),
+                          float(math.degrees(self.mpc_solution[0].delta[2] * CP.steerRatio) + angle_offset)]
 
-          self.mpc_times = [self.angle_steers_des_time,
-                            mpc_time + _DT_MPC + _DT_MPC,
-                            mpc_time + _DT_MPC + _DT_MPC]
-          self.angle_steers_des_mpc = angle_steers
-        else:
-          self.mpc_angles = [self.angle_steers_des,
-                            float(math.degrees(self.mpc_solution[0].delta[1] * CP.steerRatio) + angle_offset),
-                            float(math.degrees(self.mpc_solution[0].delta[2] * CP.steerRatio) + angle_offset)]
+        self.mpc_times = [self.angle_steers_des_time,
+                          mpc_time + _DT_MPC,
+                          mpc_time + _DT_MPC + _DT_MPC]
 
-          self.mpc_times = [self.angle_steers_des_time,
-                            mpc_time + _DT_MPC,
-                            mpc_time + _DT_MPC + _DT_MPC]
-
-          self.angle_steers_des_mpc = self.mpc_angles[1]
+        self.angle_steers_des_mpc = self.mpc_angles[1]
 
       else:
         self.libmpc.init(MPC_COST_LAT.PATH, MPC_COST_LAT.LANE, MPC_COST_LAT.HEADING, CP.steerRateCost)
@@ -333,7 +284,7 @@ class LatControl(object):
     else:
       cur_time = sec_since_boot()
 
-      if v_ego > 15 and _tuning_stage > 0: self.roll_tune(CP, PL)
+      if v_ego > 20 and _tuning_stage > 0: self.roll_tune(CP, PL)
 
       # Interpolate desired angle between MPC updates
       self.angle_steers_des = np.interp(cur_time, self.mpc_times, self.mpc_angles)
@@ -375,7 +326,7 @@ class LatControl(object):
 
       # Use projected desired and actual angles instead of "current" values, in order to make PI more reactive (for resonance)
       output_steer = self.pid.update(projected_angle_steers_des, self.projected_angle_steers, check_saturation=(v_ego > 10), override=steer_override,
-                                     feedforward=self.feed_forward, speed=v_ego, deadzone=deadzone, freeze_integrator=(_tuning_stage != 0))
+                                     feedforward=self.feed_forward, speed=v_ego, deadzone=deadzone, freeze_integrator=steer_override | (_tuning_stage in (1,2,4)))
 
       # Hide angle error if being overriden
       if steer_override:
