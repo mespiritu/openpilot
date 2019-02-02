@@ -1,5 +1,5 @@
-import zmq
 import math
+import csv
 import numpy as np
 import time
 import json
@@ -10,10 +10,11 @@ from common.numpy_fast import interp
 from common.realtime import sec_since_boot
 from selfdrive.swaglog import cloudlog
 from cereal import car
+import os, os.path
 
 _DT = 0.01    # 100Hz
 _DT_MPC = 0.05  # 20Hz
-_tuning_stage = 0
+_tuning_stage = 1
 
 def calc_states_after_delay(states, v_ego, steer_angle, curvature_factor, steer_ratio, delay, long_camera_offset):
   states[0].x = max(0.0, v_ego * delay + long_camera_offset)
@@ -92,12 +93,19 @@ class LatControl(object):
     self.lane_offset_adjustment = 0.0
 
     # variables for dashboarding
-    self.context = zmq.Context()
-    self.steerpub = self.context.socket(zmq.PUB)
-    self.steerpub.bind("tcp://*:8594")
-    self.influxString = 'steerData3,testName=none,active=%s,ff_type=%s ff_type_a=%s,ff_type_r=%s,sway=%s,reactance=%s,inductance=%s,resistance=%s,eonToFront=%s,' \
-           'prev_lane_offset=%s,lane_offset_adjustment=%s,lane_change_rate=%s,mpc_age=%s,angle_rate=%s,angle_steers=%s,angle_steers_des=%s,angle_steers_des_mpc=%s,v_ego=%s,c_poly[3]=%s,l_poly[3]=%s,r_poly[3]=%s,p=%s,i=%s,f=%s %s\n~'
+    DIR = '/sdcard/tuning'
+    self.filenumber = len([name for name in os.listdir(DIR) if os.path.isfile(os.path.join(DIR, name))])
 
+    print("start")
+    #with open(DIR + '/dashboard_file_%d.csv' % self.filenumber, mode='w') as self.dash_file:
+    self.dash_file = open(DIR + '/dashboard_file_%d.csv' % self.filenumber, mode='w')
+    print("opened")
+    self.dash_writer = csv.writer(self.dash_file, delimiter=',', quotechar='', quoting=csv.QUOTE_NONE)
+    print("initialized")
+    self.dash_writer.writerow(['angle_steers_des','angle_steers_des_mpc','angle_steers','angle_rate','v_ego','steer_override',
+                    'p','i','f','ff_type','ff_type_a','ff_type_r','sway','reactance',
+                    'inductance','resistance','eonToFront','time'])
+    print("first row")
 
     self.sine_wave = [ 0.0175, 0.0349, 0.0523, 0.0698, 0.0872, 0.1045, 0.1219, 0.1392, 0.1564, 0.1736, 0.1908, 0.2079, 0.225, 0.2419, 0.2588, 0.2756,
                       0.2924, 0.309, 0.3256, 0.342, 0.3584, 0.3746, 0.3907, 0.4067, 0.4226, 0.4384, 0.454, 0.4695, 0.4848, 0.5, 0.515, 0.5299, 0.5446,
@@ -124,7 +132,6 @@ class LatControl(object):
                       -0.309, -0.2924, -0.2756, -0.2588, -0.2419, -0.225, -0.2079, -0.1908, -0.1736, -0.1564, -0.1392, -0.1219, -0.1045, -0.0872,
                       -0.0698, -0.0523, -0.0349, -0.0175, 0.0]
 
-    self.steerdata = self.influxString
     self.frames = 0
     self.curvature_factor = 0.0
     self.mpc_frame = 0
@@ -268,11 +275,6 @@ class LatControl(object):
           self.last_cloudlog_t = cur_time
           cloudlog.warning("Lateral mpc - nan: True")
 
-    elif self.frames > 0:
-      self.steerpub.send(self.steerdata)
-      self.frames = 0
-      self.steerdata = self.influxString
-
     if v_ego < 0.3 or not active:
       output_steer = 0.0
       self.ateer_vibrate = 0.0
@@ -341,13 +343,24 @@ class LatControl(object):
       steer_stock_torque_request = 0.0
       self.angle_rate_desired = 0.0
       self.observed_ratio = 0.0
-      capture_all = True
-      if self.mpc_updated or capture_all:
-        self.frames += 1
-        self.steerdata += ("%d,%s,%d,%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d|" % \
-          (1, ff_type, 1 if ff_type == "a" else 0, 1 if ff_type == "r" else 0, PL.PP.sway, self.reactance,self.inductance,self.resistance,CP.eonToFront, \
-          self.prev_lane_offset, self.lane_offset_adjustment, self.lane_change_rate, cur_time - float(self.last_mpc_ts / 1000000000.0), float(angle_rate), angle_steers, self.angle_steers_des, self.mpc_angles[1], v_ego, \
-          self.c_poly[3], self.l_poly[3], self.r_poly[3], self.pid.p, self.pid.i, self.pid.f, int(time.time() * 100) * 10000000))
+      receiveTime = int(time.time() * 1000)
+      self.dash_writer.writerow([str(round(self.angle_steers_des, 2)),
+                            str(round(self.mpc_angles[1], 2)),
+                            str(round(angle_steers, 2)),
+                            str(round(float(angle_rate), 1)),
+                            str(round(v_ego, 1)),
+                            1 if steer_override else 0,
+                            str(round(self.pid.p, 4)),
+                            str(round(self.pid.i, 4)),
+                            str(round(self.pid.f, 4)),
+                            ff_type, 1 if ff_type == "a" else 0, 1 if ff_type == "r" else 0,
+                            str(round(PL.PP.sway,2)),
+                            str(round(self.reactance,2)),
+                            str(round(self.inductance,2)),
+                            str(round(self.resistance,2)),
+                            str(round(CP.eonToFront,1)),
+                            str(receiveTime)])
+
 
     self.sat_flag = self.pid.saturated
     self.prev_angle_rate = angle_rate
