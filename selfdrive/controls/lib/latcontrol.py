@@ -94,6 +94,11 @@ class LatControl(object):
 
     # variables for dashboarding
     DIR = '/sdcard/tuning'
+    try:
+      os.mkdir(DIR)
+    except:
+      pass
+
     self.filenumber = len([name for name in os.listdir(DIR) if os.path.isfile(os.path.join(DIR, name))])
 
     print("start")
