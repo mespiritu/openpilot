@@ -101,16 +101,11 @@ class LatControl(object):
 
     self.filenumber = len([name for name in os.listdir(DIR) if os.path.isfile(os.path.join(DIR, name))])
 
-    print("start")
-    #with open(DIR + '/dashboard_file_%d.csv' % self.filenumber, mode='w') as self.dash_file:
     self.dash_file = open(DIR + '/dashboard_file_%d.csv' % self.filenumber, mode='w')
-    print("opened")
     self.dash_writer = csv.writer(self.dash_file, delimiter=',', quotechar='', quoting=csv.QUOTE_NONE)
-    print("initialized")
     self.dash_writer.writerow(['angle_steers_des','angle_steers_des_mpc','angle_steers','angle_rate','v_ego','steer_override',
-                    'p','i','f','ff_type','ff_type_a','ff_type_r','sway','reactance',
+                    'p','i','f','ff_type_a','ff_type_r','sway','reactance',
                     'inductance','resistance','eonToFront','time'])
-    print("first row")
 
     self.sine_wave = [ 0.0175, 0.0349, 0.0523, 0.0698, 0.0872, 0.1045, 0.1219, 0.1392, 0.1564, 0.1736, 0.1908, 0.2079, 0.225, 0.2419, 0.2588, 0.2756,
                       0.2924, 0.309, 0.3256, 0.342, 0.3584, 0.3746, 0.3907, 0.4067, 0.4226, 0.4384, 0.454, 0.4695, 0.4848, 0.5, 0.515, 0.5299, 0.5446,
@@ -358,7 +353,7 @@ class LatControl(object):
                             str(round(self.pid.p, 4)),
                             str(round(self.pid.i, 4)),
                             str(round(self.pid.f, 4)),
-                            ff_type, 1 if ff_type == "a" else 0, 1 if ff_type == "r" else 0,
+                            1 if ff_type == "a" else 0, 1 if ff_type == "r" else 0,
                             str(round(PL.PP.sway,2)),
                             str(round(self.reactance,2)),
                             str(round(self.inductance,2)),
