@@ -14,7 +14,7 @@ import os, os.path
 
 _DT = 0.01    # 100Hz
 _DT_MPC = 0.05  # 20Hz
-_tuning_stage = 2
+_tuning_stage = 3
 
 def calc_states_after_delay(states, v_ego, steer_angle, curvature_factor, steer_ratio, delay, long_camera_offset):
   states[0].x = max(0.0, v_ego * delay + long_camera_offset)
