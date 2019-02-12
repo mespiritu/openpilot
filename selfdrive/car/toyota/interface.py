@@ -73,7 +73,7 @@ class CarInterface(object):
     tireStiffnessFront_civic = 192150
     tireStiffnessRear_civic = 202500
 
-    ret.steerReactance = 2.1
+    ret.steerReactance = 2.6
     ret.steerInductance = 1.6
     ret.steerResistance = 0.3
     ret.eonToFront = 0.5
