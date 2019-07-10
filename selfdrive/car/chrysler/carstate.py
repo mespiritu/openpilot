@@ -4,6 +4,7 @@ from common.kalman.simple_kalman import KF1D
 from selfdrive.car.modules.UIBT_module import UIButtons,UIButton
 from selfdrive.car.modules.UIEV_module import UIEvents
 import numpy as np
+import selfdrive.kegman_conf as kegman
 
 
 def parse_gear_shifter(can_gear):
@@ -74,24 +75,27 @@ def get_camera_parser(CP):
     ("LKAS_STATUS_OK", "LKAS_HEARTBIT", -1)
   ]
   checks = []
-  
+
   return CANParser(DBC[CP.carFingerprint]['pt'], signals, checks, 2)
 
 class CarState(object):
   def __init__(self, CP):
+    self.gasMode = int(kegman.conf['lastGasMode'])
+    self.gasLabels = ["dynamic","sport","eco"]
     self.alcaLabels = ["MadMax","Normal","Wifey","off"]
-    self.alcaMode = 2     # default to wifey on startup
+    self.alcaMode = int(kegman.conf['lastALCAMode'])
+    steerRatio = CP.steerRatio
     self.prev_distance_button = 0
     self.distance_button = 0
     self.prev_lka_button = 0
     self.lka_button = 0
     self.lkMode = True
-    
+    self.lane_departure_toggle_on = True
     # ALCA PARAMS
     self.blind_spot_on = bool(0)
     # max REAL delta angle for correction vs actuator
-    self.CL_MAX_ANGLE_DELTA_BP = [10., 32., 44.]
-    self.CL_MAX_ANGLE_DELTA = [0.77, 0.86, 0.535]
+    self.CL_MAX_ANGLE_DELTA_BP = [10., 32., 55.]
+    self.CL_MAX_ANGLE_DELTA = [0.77 * 16.2 / steerRatio, 0.86 * 16.2 / steerRatio, 0.535 * 16.2 / steerRatio]
     # adjustment factor for merging steer angle to actuator; should be over 4; the higher the smoother
     self.CL_ADJUST_FACTOR_BP = [10., 44.]
     self.CL_ADJUST_FACTOR = [16. , 8.]
@@ -148,10 +152,10 @@ class CarState(object):
     dt = 0.01
     # Q = np.matrix([[10.0, 0.0], [0.0, 100.0]])
     # R = 1e3
-    self.v_ego_kf = KF1D(x0=np.matrix([[0.0], [0.0]]),
-                         A=np.matrix([[1.0, dt], [0.0, 1.0]]),
-                         C=np.matrix([1.0, 0.0]),
-                         K=np.matrix([[0.12287673], [0.29666309]]))
+    self.v_ego_kf = KF1D(x0=[[0.0], [0.0]],
+                         A=[[1.0, dt], [0.0, 1.0]],
+                         C=[1.0, 0.0],
+                         K=[[0.12287673], [0.29666309]])
     self.v_ego = 0.0
     
    #BB init ui buttons
@@ -159,9 +163,9 @@ class CarState(object):
     btns = []
     btns.append(UIButton("sound", "SND", 0, "", 0))
     btns.append(UIButton("alca", "ALC", 0, self.alcaLabels[self.alcaMode], 1))
-    btns.append(UIButton("","",0,"",2))
+    btns.append(UIButton("mad","MAD",0,"",2))
     btns.append(UIButton("","",0,"",3))
-    btns.append(UIButton("gas","GAS",1,"",4))
+    btns.append(UIButton("gas","GAS",1,self.gasLabels[self.gasMode],4))
     btns.append(UIButton("lka","LKA",1,"",5))
     return btns
   #BB update ui buttons
@@ -170,19 +174,30 @@ class CarState(object):
       if (id == 1) and (btn_status == 0) and self.cstm_btns.btns[id].btn_name=="alca":
           if self.cstm_btns.btns[id].btn_label2 == self.alcaLabels[self.alcaMode]:
             self.alcaMode = (self.alcaMode + 1 ) % 4
+            kegman.save({'lastALCAMode': int(self.alcaMode)})  # write last distance bar setting to file
           else:
             self.alcaMode = 0
+            kegman.save({'lastALCAMode': int(self.alcaMode)})  # write last distance bar setting to file
           self.cstm_btns.btns[id].btn_label2 = self.alcaLabels[self.alcaMode]
           self.cstm_btns.hasChanges = True
           if self.alcaMode == 3:
             self.cstm_btns.set_button_status("alca", 0)
-
+      elif (id == 4) and (btn_status == 0) and self.cstm_btns.btns[id].btn_name=="gas":
+          if self.cstm_btns.btns[id].btn_label2 == self.gasLabels[self.gasMode]:
+            self.gasMode = (self.gasMode + 1 ) % 3
+            kegman.save({'lastGasMode': int(self.gasMode)})  # write last GasMode setting to file
+          else:
+            self.gasMode = 0
+            kegman.save({'lastGasMode': int(self.gasMode)})  # write last GasMode setting to file
+          self.cstm_btns.btns[id].btn_label2 = self.gasLabels[self.gasMode]
+          self.cstm_btns.hasChanges = True
       else:
         self.cstm_btns.btns[id].btn_status = btn_status * self.cstm_btns.btns[id].btn_status
     else:
         self.cstm_btns.btns[id].btn_status = btn_status
         if (id == 1) and self.cstm_btns.btns[id].btn_name=="alca":
           self.alcaMode = (self.alcaMode + 1 ) % 4
+          kegman.save({'lastALCAMode': int(self.alcaMode)})  # write last distance bar setting to file
           self.cstm_btns.btns[id].btn_label2 = self.alcaLabels[self.alcaMode]
           self.cstm_btns.hasChanges = True
     
@@ -216,7 +231,7 @@ class CarState(object):
 
     # Kalman filter
     if abs(v_wheel - self.v_ego) > 2.0:  # Prevent large accelerations when car starts at non zero speed
-      self.v_ego_kf.x = np.matrix([[v_wheel], [0.0]])
+      self.v_ego_kf.x = [[v_wheel], [0.0]]
 
     self.v_ego_raw = v_wheel
     v_ego_x = self.v_ego_kf.update(v_wheel)
@@ -248,3 +263,15 @@ class CarState(object):
     self.lkas_car_model = cp_cam.vl["LKAS_HUD"]['CAR_MODEL']
     self.lkas_status_ok = cp_cam.vl["LKAS_HEARTBIT"]['LKAS_STATUS_OK']
     
+    if self.cstm_btns.get_button_status("lka") == 0:
+      self.lane_departure_toggle_on = False
+    else:
+      if self.alcaMode == 3 and (self.left_blinker_on or self.right_blinker_on):
+        self.lane_departure_toggle_on = False
+      else:
+        self.lane_departure_toggle_on = True
+
+    #self.lkas_counter = cp_cam.vl["LKAS_COMMAND"]['COUNTER']
+    #self.lkas_car_model = cp_cam.vl["LKAS_HUD"]['CAR_MODEL']
+    #self.lkas_status_ok = cp_cam.vl["LKAS_HEARTBIT"]['LKAS_STATUS_OK']
+

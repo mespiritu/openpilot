@@ -124,8 +124,9 @@ class CarController(object):
         apply_steer = 0
 
       self.apply_steer_last = apply_steer
-      idx = (frame / P.STEER_STEP) % 4
-      if CS.cstm_btns.get_button_status("lka") == 0:
+
+      idx = (frame // P.STEER_STEP) % 4
+      if not CS.lane_departure_toggle_on:
         apply_steer = 0
 
       if self.car_fingerprint in SUPERCRUISE_CARS:
@@ -156,7 +157,7 @@ class CarController(object):
 
       # Gas/regen and brakes - all at 25Hz
       if (frame % 4) == 0:
-        idx = (frame / 4) % 4
+        idx = (frame // 4) % 4
 
         car_stopping = apply_gas < P.ZERO_GAS
         standstill = CS.pcm_acc_status == AccState.STANDSTILL
@@ -182,13 +183,13 @@ class CarController(object):
       tt = sec_since_boot()
 
       if frame % time_and_headlights_step == 0:
-        idx = (frame / time_and_headlights_step) % 4
+        idx = (frame // time_and_headlights_step) % 4
         can_sends.append(gmcan.create_adas_time_status(canbus.obstacle, int((tt - self.start_time) * 60), idx))
         can_sends.append(gmcan.create_adas_headlights_status(canbus.obstacle))
 
       speed_and_accelerometer_step = 2
       if frame % speed_and_accelerometer_step == 0:
-        idx = (frame / speed_and_accelerometer_step) % 4
+        idx = (frame // speed_and_accelerometer_step) % 4
         can_sends.append(gmcan.create_adas_steering_status(canbus.obstacle, idx))
         can_sends.append(gmcan.create_adas_accelerometer_speed_status(canbus.obstacle, CS.v_ego, idx))
 
@@ -224,4 +225,4 @@ class CarController(object):
       # issued for the same chime type and duration
       self.chime = chime
 
-    sendcan.send(can_list_to_can_capnp(can_sends, msgtype='sendcan').to_bytes())
+    sendcan.send(can_list_to_can_capnp(can_sends, msgtype='sendcan'))

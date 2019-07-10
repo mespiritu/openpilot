@@ -17,7 +17,7 @@ except ImportError as e:
   os.execv(sys.executable, args)
 
 DEFAULT_SPEEDS_BY_REGION_JSON_FILE = BASEDIR + "/selfdrive/mapd/default_speeds_by_region.json"
-import default_speeds_generator
+from selfdrive.mapd import default_speeds_generator
 default_speeds_generator.main(DEFAULT_SPEEDS_BY_REGION_JSON_FILE)
 
 import os
@@ -28,12 +28,11 @@ import threading
 import numpy as np
 import overpy
 from collections import defaultdict
-
 from common.params import Params
 from common.transformations.coordinates import geodetic2ecef
 from selfdrive.services import service_list
 import selfdrive.messaging as messaging
-from mapd_helpers import MAPS_LOOKAHEAD_DISTANCE, Way, circle_through_points
+from selfdrive.mapd.mapd_helpers import MAPS_LOOKAHEAD_DISTANCE, Way, circle_through_points
 import selfdrive.crash as crash
 from selfdrive.version import version, dirty
 
@@ -80,7 +79,7 @@ def query_thread():
         cur_ecef = geodetic2ecef((last_gps.latitude, last_gps.longitude, last_gps.altitude))
         prev_ecef = geodetic2ecef((last_query_pos.latitude, last_query_pos.longitude, last_query_pos.altitude))
         dist = np.linalg.norm(cur_ecef - prev_ecef)
-        if dist < 1000: #updated when we are 1km from the edge of the downloaded circle
+        if dist < 3000: #updated when we are 1km from the edge of the downloaded circle
           continue
 
         if dist > 4000:
@@ -121,19 +120,28 @@ def query_thread():
         query_lock.release()
 
       except Exception as e:
-        print e
+        print(e)
         query_lock.acquire()
         last_query_result = None
         query_lock.release()
 
+def save_gps_data(gps):
+  try:
+    location = [gps.speed, gps.bearing, gps.latitude, gps.longitude, gps.altitude, gps.accuracy, time.time()]
+    with open("/data/openpilot/selfdrive/data_collection/gps-data", "a") as f:
+      f.write("{}\n".format(location))
+  except:
+    pass
 
 def mapsd_thread():
   global last_gps
 
   context = zmq.Context()
+  poller = zmq.Poller()
   gps_sock = messaging.sub_sock(context, service_list['gpsLocation'].port, conflate=True)
-  gps_external_sock = messaging.sub_sock(context, service_list['gpsLocationExternal'].port, conflate=True)
+  gps_external_sock = messaging.sub_sock(context, service_list['gpsLocationExternal'].port, conflate=True, poller=poller)
   map_data_sock = messaging.pub_sock(context, service_list['liveMapData'].port)
+  traffic_data_sock = messaging.sub_sock(context, service_list['liveTrafficData'].port, conflate=True, poller=poller)
 
   cur_way = None
   curvature_valid = False
@@ -141,15 +149,44 @@ def mapsd_thread():
   upcoming_curvature = 0.
   dist_to_turn = 0.
   road_points = None
-
+  speedLimittraffic = 0
+  speedLimittraffic_prev = 0
+  max_speed = None
+  max_speed_ahead = None
+  max_speed_ahead_dist = None
+  
+  max_speed_prev = 0
+  speedLimittrafficvalid = False
+  
   while True:
     gps = messaging.recv_one(gps_sock)
-    gps_ext = messaging.recv_one_or_none(gps_external_sock)
-
+    gps_ext = None
+    traffic = None
+    for socket, event in poller.poll(0):
+      if socket is gps_external_sock:
+        gps_ext = messaging.recv_one(socket)
+      elif socket is traffic_data_sock:
+        traffic = messaging.recv_one(socket)
+    if traffic is not None:
+      if traffic.liveTrafficData.speedLimitValid:
+        speedLimittraffic = traffic.liveTrafficData.speedLimit
+        if abs(speedLimittraffic_prev - speedLimittraffic) > 0.1:
+          speedLimittrafficvalid = True
+          speedLimittraffic_prev = speedLimittraffic
+      if traffic.liveTrafficData.speedAdvisoryValid:
+        speedLimittrafficAdvisory = traffic.liveTrafficData.speedAdvisory
+        speedLimittrafficAdvisoryvalid = True
+      else:
+        speedLimittrafficAdvisoryvalid = False
+    else:
+      speedLimittrafficAdvisoryvalid = False
+      speedLimittrafficvalid = False
     if gps_ext is not None:
       gps = gps_ext.gpsLocationExternal
     else:
       gps = gps.gpsLocation
+
+    save_gps_data(gps)
 
     last_gps = gps
 
@@ -157,6 +194,8 @@ def mapsd_thread():
     if not fix_ok or last_query_result is None or not cache_valid:
       cur_way = None
       curvature = None
+      max_speed_ahead = None
+      max_speed_ahead_dist = None
       curvature_valid = False
       upcoming_curvature = 0.
       dist_to_turn = 0.
@@ -176,9 +215,9 @@ def mapsd_thread():
 
         xs = pnts[:, 0]
         ys = pnts[:, 1]
-        road_points = map(float, xs), map(float, ys)
+        road_points = [float(x) for x in xs], [float(y) for y in ys]
 
-        if speed < 10:
+        if speed < 5:
           curvature_valid = False
         if curvature_valid and pnts.shape[0] <= 3:
           curvature_valid = False
@@ -214,7 +253,7 @@ def mapsd_thread():
             # TODO: Determine left or right turn
             curvature = np.nan_to_num(curvature)
 
-            # Outlier rejection
+            # Outlier rejection TODO: Needs to include more data i.e. Less outliers
             new_curvature = np.percentile(curvature, 90, interpolation='lower')
 
             k = 0.6
@@ -240,25 +279,35 @@ def mapsd_thread():
     if cur_way is not None:
       dat.liveMapData.wayId = cur_way.id
 
-      # Seed limit
+      # Speed limit
       max_speed = cur_way.max_speed()
       if max_speed is not None:
-        dat.liveMapData.speedLimitValid = True
-        dat.liveMapData.speedLimit = max_speed
+        max_speed_ahead = None
+        max_speed_ahead_dist = None
+         
+        if abs(max_speed - max_speed_prev) > 0.1:
+          speedLimittrafficvalid = False
+          max_speed_prev = max_speed
+      
+      
 
-        # TODO: use the function below to anticipate upcoming speed limits
-        #max_speed_ahead, max_speed_ahead_dist = cur_way.max_speed_ahead(max_speed, lat, lon, heading, MAPS_LOOKAHEAD_DISTANCE)
-        #if max_speed_ahead is not None and max_speed_ahead_dist is not None:
-        #  dat.liveMapData.speedLimitAheadValid = True
-        #  dat.liveMapData.speedLimitAhead = float(max_speed_ahead)
-        #  dat.liveMapData.speedLimitAheadDistance = float(max_speed_ahead_dist)
+        # TODO: anticipate T junctions and right and left hand turns based on indicator
+        max_speed_ahead, max_speed_ahead_dist = cur_way.max_speed_ahead(max_speed, lat, lon, heading, MAPS_LOOKAHEAD_DISTANCE)
+        if max_speed_ahead is not None and max_speed_ahead_dist is not None:
+          dat.liveMapData.speedLimitAheadValid = True
+          dat.liveMapData.speedLimitAhead = float(max_speed_ahead)
+          dat.liveMapData.speedLimitAheadDistance = float(max_speed_ahead_dist)
 
 
       advisory_max_speed = cur_way.advisory_max_speed()
-      if advisory_max_speed is not None:
+      if speedLimittrafficAdvisoryvalid:
         dat.liveMapData.speedAdvisoryValid = True
-        dat.liveMapData.speedAdvisory = advisory_max_speed
-
+        dat.liveMapData.speedAdvisory = speedLimittrafficAdvisory / 3.6
+      else:
+        if advisory_max_speed is not None:
+          dat.liveMapData.speedAdvisoryValid = True
+          dat.liveMapData.speedAdvisory = advisory_max_speed
+      
       # Curvature
       dat.liveMapData.curvatureValid = curvature_valid
       dat.liveMapData.curvature = float(upcoming_curvature)
@@ -266,9 +315,21 @@ def mapsd_thread():
       if road_points is not None:
         dat.liveMapData.roadX, dat.liveMapData.roadY = road_points
       if curvature is not None:
-        dat.liveMapData.roadCurvatureX = map(float, dists)
-        dat.liveMapData.roadCurvature = map(float, curvature)
+        dat.liveMapData.roadCurvatureX = [float(x) for x in dists]
+        dat.liveMapData.roadCurvature = [float(x) for x in curvature]
 
+    if speedLimittrafficvalid:
+      if speedLimittraffic > 0.1:
+        dat.liveMapData.speedLimitValid = True
+        dat.liveMapData.speedLimit = speedLimittraffic / 3.6
+        map_valid = False
+      else:
+        speedLimittrafficvalid = False
+    else:
+      if max_speed is not None:
+        dat.liveMapData.speedLimitValid = True
+        dat.liveMapData.speedLimit = max_speed
+        
     dat.liveMapData.mapValid = map_valid
 
     map_data_sock.send(dat.to_bytes())

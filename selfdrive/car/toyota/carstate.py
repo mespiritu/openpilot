@@ -1,5 +1,5 @@
 import zmq
-from math import acos,sin,cos,radians
+from math import sin,cos,radians
 import selfdrive.messaging as messaging
 from selfdrive.services import service_list
 from common.kalman.simple_kalman import KF1D
@@ -8,13 +8,12 @@ from common.numpy_fast import interp
 from selfdrive.can.parser import CANParser, CANDefine
 from selfdrive.config import Conversions as CV
 from selfdrive.car.toyota.values import CAR, DBC, STEER_THRESHOLD
-from common.kalman.simple_kalman import KF1D
-from selfdrive.kegman_conf import kegman_conf
+import selfdrive.kegman_conf as kegman
 from selfdrive.car.modules.UIBT_module import UIButtons,UIButton
 from selfdrive.car.modules.UIEV_module import UIEvents
-import os
-import subprocess
-import sys
+#import os
+#import subprocess
+#import sys
 
 def gps_distance(gpsLat, gpsLon, gpsAlt, gpsAcc):
   A = np.array([(6371010+gpsAlt)*sin(radians(gpsLat-90))*cos(radians(gpsLon)),(6371010+gpsAlt)*sin(radians(gpsLat-90))*sin(radians(gpsLon)),(6371010+gpsAlt)*cos(radians(gpsLat-90))])
@@ -35,7 +34,7 @@ def gps_distance(gpsLat, gpsLon, gpsAlt, gpsAcc):
   speedlimit = float(B[minindex,7])
   
   if abs(gpsAlt -B[minindex,3]) < altacc:
-    if gpsAcc<1.00001:
+    if gpsAcc<0.1:
       #dist = 6371010*acos(sin(radians(gpsLat))*sin(radians(lat))+cos(radians(gpsLat))*cos(radians(lat))*cos(radians(gpsLon-lon)))
       dist = (np.sum((B[minindex,[0,1,2]] - A)**2))**0.5
   #else:
@@ -60,6 +59,7 @@ def get_can_parser(CP):
     ("SPORT_ON", "GEAR_PACKET", 0),
     ("ECON_ON", "GEAR_PACKET", 0),
     ("BRAKE_PRESSED", "BRAKE_MODULE", 0),
+    ("BRAKE_PRESSURE", "BRAKE_MODULE", 0),
     ("GAS_PEDAL", "GAS_PEDAL", 0),
     ("WHEEL_SPEED_FL", "WHEEL_SPEEDS", 0),
     ("WHEEL_SPEED_FR", "WHEEL_SPEEDS", 0),
@@ -76,10 +76,6 @@ def get_can_parser(CP):
     ("STEER_RATE", "STEER_ANGLE_SENSOR", 0),
     ("GAS_RELEASED", "PCM_CRUISE", 0),
     ("CRUISE_ACTIVE", "PCM_CRUISE", 0),
-    ("CRUISE_STATE", "PCM_CRUISE", 0),
-    ("MAIN_ON", "PCM_CRUISE_2", 0),
-    ("SET_SPEED", "PCM_CRUISE_2", 0),
-    ("LOW_SPEED_LOCKOUT", "PCM_CRUISE_2", 0),
     ("STEER_TORQUE_DRIVER", "STEER_TORQUE_SENSOR", 0),
     ("STEER_TORQUE_EPS", "STEER_TORQUE_SENSOR", 0),
     ("TURN_SIGNALS", "STEERING_LEVERS", 3),   # 3 is no blinkers
@@ -96,20 +92,55 @@ def get_can_parser(CP):
     ("ACC_SLOW", "JOEL_ID", 0),
     ("DISTANCE_LINES", "PCM_CRUISE_SM", 0),
   ]
-
-  checks = [
-    ("BRAKE_MODULE", 40),
-    ("GAS_PEDAL", 33),
-    ("WHEEL_SPEEDS", 80),
-    ("STEER_ANGLE_SENSOR", 80),
-    ("PCM_CRUISE", 33),
-    ("PCM_CRUISE_2", 33),
-    ("STEER_TORQUE_SENSOR", 50),
-    ("EPS_STATUS", 25),
-  ]
+  if CP.carFingerprint == CAR.LEXUS_RX:
+    checks = []
+  else:
+    checks = [
+      ("WHEEL_SPEEDS", 80),
+      ("STEER_ANGLE_SENSOR", 80),
+      ("PCM_CRUISE", 33),
+      ("STEER_TORQUE_SENSOR", 50),
+      ("EPS_STATUS", 25),
+    ]
+    if CP.carFingerprint == CAR.LEXUS_ISH:
+      checks += [
+        ("BRAKE_MODULE", 50),
+        ("GAS_PEDAL", 50),
+      ]
+    else:
+      checks += [
+        ("BRAKE_MODULE", 40),
+        ("GAS_PEDAL", 33),
+      ]
 
   if CP.carFingerprint == CAR.PRIUS:
     signals += [("STATE", "AUTOPARK_STATUS", 0)]
+  
+  if CP.carFingerprint == CAR.LEXUS_IS:
+    signals += [
+      ("CRUISE_STATE", "PCM_CRUISE_3", 0),
+      ("MAIN_ON", "PCM_CRUISE_3", 0),
+      ("SET_SPEED", "PCM_CRUISE_3", 0),
+      ("LOW_SPEED_LOCKOUT", "PCM_CRUISE_3", 0),
+    ]
+    checks += [("PCM_CRUISE_3", 1)]
+
+  elif CP.carFingerprint == CAR.LEXUS_ISH:
+    signals += [
+      ("MAIN_ON", "PCM_CRUISE_ISH", 0),
+      ("SET_SPEED", "PCM_CRUISE_ISH", 0),
+      ("AUTO_HIGH_BEAM", "LIGHT_STALK_ISH", 0),
+    ]
+    checks += [("PCM_CRUISE_ISH", 1)]
+
+  else:
+    signals += [
+      ("CRUISE_STATE", "PCM_CRUISE", 0),
+      ("MAIN_ON", "PCM_CRUISE_2", 0),
+      ("SET_SPEED", "PCM_CRUISE_2", 0),
+      ("LOW_SPEED_LOCKOUT", "PCM_CRUISE_2", 0),
+    ]
+    checks += [("PCM_CRUISE_2", 33)]
 
   # add gas interceptor reading if we are using it
   if CP.enableGasInterceptor:
@@ -126,7 +157,18 @@ def get_can_parser(CP):
 
 def get_cam_can_parser(CP):
 
-  signals = []
+  signals = [
+    ("TSGN1", "RSA1", 0),
+    ("SPDVAL1", "RSA1", 0),
+    ("SPLSGN1", "RSA1", 0),
+    ("TSGN2", "RSA1", 0),
+    ("SPDVAL2", "RSA1", 0),
+    ("SPLSGN2", "RSA1", 0),
+    ("TSGN3", "RSA2", 0),
+    ("SPLSGN3", "RSA2", 0),
+    ("TSGN4", "RSA2", 0),
+    ("SPLSGN4", "RSA2", 0),
+  ]
 
   # use steering message to check if panda is connected to frc
   checks = [("STEERING_LKA", 42)]
@@ -136,65 +178,74 @@ def get_cam_can_parser(CP):
 
 class CarState(object):
   def __init__(self, CP):
-    self.kegman = kegman_conf()
+    self.brakefactor = float(kegman.conf['brakefactor'])
     self.trfix = False
+    self.indi_toggle = False
+    steerRatio = CP.steerRatio
     self.Angles = np.zeros(250)
     self.Angles_later = np.zeros(250)
     self.Angle_counter = 0
     self.Angle = [0, 5, 10, 15,20,25,30,35,60,100,180,270,500]
     self.Angle_Speed = [255,160,100,80,70,60,55,50,40,33,27,17,12]
     #labels for gas mode
-    self.gasMode = 0
-    self.gasLabels = ["normal","sport","eco"]
+    self.gasMode = int(kegman.conf['lastGasMode'])
+    self.sloMode = int(kegman.conf['lastSloMode'])
+    self.sloLabels = ["offset","normal"]
+    self.gasLabels = ["dynamic","sport","eco"]
     #labelslabels for ALCA modes
     self.alcaLabels = ["MadMax","Normal","Wifey","off"]
-    self.alcaMode = int(self.kegman.conf['lastALCAMode'])     # default to last ALCAmode on startup
+    self.alcaMode = int(kegman.conf['lastALCAMode'])     # default to last ALCAmode on startup
     #if (CP.carFingerprint == CAR.MODELS):
     # ALCA PARAMS
     # max REAL delta angle for correction vs actuator
-    self.CL_MAX_ANGLE_DELTA_BP = [10., 15., 32., 44.]#[10., 44.]
-    self.CL_MAX_ANGLE_DELTA = [2.0, 1.75, 0.96, 0.4]
+    self.CL_MAX_ANGLE_DELTA_BP = [10., 15., 32., 55.]#[10., 44.]
+    self.CL_MAX_ANGLE_DELTA = [2.0 * 15.5 / steerRatio, 1.75 * 15.5 / steerRatio, 1.25 * 15.5 / steerRatio, 0.5 * 15.5 / steerRatio]
      # adjustment factor for merging steer angle to actuator; should be over 4; the higher the smoother
-    self.CL_ADJUST_FACTOR_BP = [10., 44.]
+    self.CL_ADJUST_FACTOR_BP = [10., 50.]
     self.CL_ADJUST_FACTOR = [16. , 8.]
      # reenrey angle when to let go
-    self.CL_REENTRY_ANGLE_BP = [10., 44.]
+    self.CL_REENTRY_ANGLE_BP = [10., 50.]
     self.CL_REENTRY_ANGLE = [5. , 5.]
      # a jump in angle above the CL_LANE_DETECT_FACTOR means we crossed the line
-    self.CL_LANE_DETECT_BP = [10., 44.]
-    self.CL_LANE_DETECT_FACTOR = [1.3, 1.3]
-    self.CL_LANE_PASS_BP = [10., 20., 44.]
-    self.CL_LANE_PASS_TIME = [40.,10., 3.] 
+    self.CL_LANE_DETECT_BP = [10., 50.]
+    self.CL_LANE_DETECT_FACTOR = [1.0, 0.5]
+    self.CL_LANE_PASS_BP = [10., 20., 50.]
+    self.CL_LANE_PASS_TIME = [40.,10., 3.]
      # change lane delta angles and other params
-    self.CL_MAXD_BP = [10., 32., 44.]
+    self.CL_MAXD_BP = [10., 32., 50.]
     self.CL_MAXD_A = [.358, 0.084, 0.042] #delta angle based on speed; needs fine tune, based on Tesla steer ratio of 16.75
     self.CL_MIN_V = 8.9 # do not turn if speed less than x m/2; 20 mph = 8.9 m/s
      # do not turn if actuator wants more than x deg for going straight; this should be interp based on speed
-    self.CL_MAX_A_BP = [10., 44.]
-    self.CL_MAX_A = [10., 10.] 
+    self.CL_MAX_A_BP = [10., 50.]
+    self.CL_MAX_A = [10., 10.]
      # define limits for angle change every 0.1 s
     # we need to force correction above 10 deg but less than 20
     # anything more means we are going to steep or not enough in a turn
     self.CL_MAX_ACTUATOR_DELTA = 2.
-    self.CL_MIN_ACTUATOR_DELTA = 0. 
-    self.CL_CORRECTION_FACTOR = [1.3,1.2,1.2]
-    self.CL_CORRECTION_FACTOR_BP = [10., 32., 44.]
+    self.CL_MIN_ACTUATOR_DELTA = 0.
+    self.CL_CORRECTION_FACTOR = [1.3,1.1,1.05]
+    self.CL_CORRECTION_FACTOR_BP = [10., 32., 50.]
      #duration after we cross the line until we release is a factor of speed
-    self.CL_TIMEA_BP = [10., 32., 44.]
+    self.CL_TIMEA_BP = [10., 32., 50.]
     self.CL_TIMEA_T = [0.7 ,0.30, 0.20]
     #duration to wait (in seconds) with blinkers on before starting to turn
     self.CL_WAIT_BEFORE_START = 1
     #END OF ALCA PARAMS
-    
+
     context = zmq.Context()
     self.poller = zmq.Poller()
     self.lastlat_Control = None
     #gps_ext_sock = messaging.sub_sock(context, service_list['gpsLocationExternal'].port, poller)
     self.gps_location = messaging.sub_sock(context, service_list['gpsLocationExternal'].port, conflate=True, poller=self.poller)
     self.lat_Control = messaging.sub_sock(context, service_list['latControl'].port, conflate=True, poller=self.poller)
+    self.live_MapData = messaging.sub_sock(context, service_list['liveMapData'].port, conflate=True, poller=self.poller)
+    self.traffic_data_sock = messaging.pub_sock(context, service_list['liveTrafficData'].port)
+    
+    self.spdval1 = 0
     self.CP = CP
     self.can_define = CANDefine(DBC[CP.carFingerprint]['pt'])
     self.shifter_values = self.can_define.dv["GEAR_PACKET"]['GEAR']
+    
     self.left_blinker_on = 0
     self.right_blinker_on = 0
     self.lkas_barriers = 0
@@ -208,7 +259,7 @@ class CarState(object):
     self.blind_spot_on = bool(0)
     self.econ_on = 0
     self.sport_on = 0
-    
+
     self.distance_toggle_prev = 2
     self.read_distance_lines_prev = 3
     self.lane_departure_toggle_on_prev = True
@@ -218,6 +269,9 @@ class CarState(object):
 
     #BB variable for custom buttons
     self.cstm_btns = UIButtons(self,"Toyota","toyota")
+    if self.CP.carFingerprint == CAR.PRIUS:
+      self.alcaMode = 3
+      self.cstm_btns.set_button_status("alca", 0)
 
     #BB pid holder for ALCA
     self.pid = None
@@ -226,23 +280,23 @@ class CarState(object):
     self.custom_alert_counter = 100 #set to 100 for 1 second display; carcontroller will take down to zero
     # initialize can parser
     self.car_fingerprint = CP.carFingerprint
-    
+
     # vEgo kalman filter
     dt = 0.01
     # Q = np.matrix([[10.0, 0.0], [0.0, 100.0]])
     # R = 1e3
-    self.v_ego_kf = KF1D(x0=np.matrix([[0.0], [0.0]]),
-                         A=np.matrix([[1.0, dt], [0.0, 1.0]]),
-                         C=np.matrix([1.0, 0.0]),
-                         K=np.matrix([[0.12287673], [0.29666309]]))
+    self.v_ego_kf = KF1D(x0=[[0.0], [0.0]],
+                         A=[[1.0, dt], [0.0, 1.0]],
+                         C=[1.0, 0.0],
+                         K=[[0.12287673], [0.29666309]])
     self.v_ego = 0.0
 
  #BB init ui buttons
   def init_ui_buttons(self):
     btns = []
     btns.append(UIButton("sound", "SND", 0, "", 0))
-    btns.append(UIButton("alca", "ALC", 1, self.alcaLabels[self.alcaMode], 1))
-    btns.append(UIButton("slow", "SLO", 1, "", 2))
+    btns.append(UIButton("alca", "ALC", 0, self.alcaLabels[self.alcaMode], 1))
+    btns.append(UIButton("slow", "SLO", self.sloMode, self.sloLabels[self.sloMode], 2))
     btns.append(UIButton("lka", "LKA", 1, "", 3))
     btns.append(UIButton("tr", "TR", 0, "", 4))
     btns.append(UIButton("gas", "GAS", 1, self.gasLabels[self.gasMode], 5))
@@ -254,21 +308,41 @@ class CarState(object):
       if (id == 1) and (btn_status == 0) and self.cstm_btns.btns[id].btn_name=="alca":
           if self.cstm_btns.btns[id].btn_label2 == self.alcaLabels[self.alcaMode]:
             self.alcaMode = (self.alcaMode + 1 ) % 4
-            self.kegman.conf['lastALCAMode'] = str(self.alcaMode)   # write last ALCAMode setting to file
-            self.kegman.write_config(self.kegman.conf)
+            if self.CP.carFingerprint == CAR.PRIUS:
+              self.alcaMode = 3
+              self.cstm_btns.set_button_status("alca", 0)
+            kegman.save({'lastALCAMode': int(self.alcaMode)})  # write last ALCAMode setting to file
           else:
             self.alcaMode = 0
-            self.kegman.conf['lastALCAMode'] = str(self.alcaMode)   # write last ALCAMode setting to file
-            self.kegman.write_config(self.kegman.conf)
+            if self.CP.carFingerprint == CAR.PRIUS:
+              self.alcaMode = 3
+              self.cstm_btns.set_button_status("alca", 0)
+            kegman.save({'lastALCAMode': int(self.alcaMode)})  # write last ALCAMode setting to file
           self.cstm_btns.btns[id].btn_label2 = self.alcaLabels[self.alcaMode]
           self.cstm_btns.hasChanges = True
+          if self.CP.carFingerprint == CAR.PRIUS:
+            self.alcaMode = 3
           if self.alcaMode == 3:
             self.cstm_btns.set_button_status("alca", 0)
+      elif (id == 2) and (btn_status == 0) and self.cstm_btns.btns[id].btn_name=="slow":
+        if self.cstm_btns.btns[id].btn_label2 == self.sloLabels[self.sloMode]:
+          self.sloMode = (self.sloMode + 1 ) % 2
+          kegman.save({'lastSloMode': int(self.sloMode)})  # write last SloMode setting to file
+        else:
+          self.sloMode = 0
+          kegman.save({'lastSloMode': int(self.sloMode)})  # write last SloMode setting to file
+        self.cstm_btns.btns[id].btn_label2 = self.sloLabels[self.sloMode]
+        self.cstm_btns.hasChanges = True
+        if self.sloMode == 0:
+          self.cstm_btns.set_button_status("slow", 0)  # this might not be needed
       elif (id == 5) and (btn_status == 0) and self.cstm_btns.btns[id].btn_name=="gas":
           if self.cstm_btns.btns[id].btn_label2 == self.gasLabels[self.gasMode]:
             self.gasMode = (self.gasMode + 1 ) % 3
+            kegman.save({'lastGasMode': int(self.gasMode)})  # write last GasMode setting to file
           else:
             self.gasMode = 0
+            kegman.save({'lastGasMode': int(self.gasMode)})  # write last GasMode setting to file
+
           self.cstm_btns.btns[id].btn_label2 = self.gasLabels[self.gasMode]
           self.cstm_btns.hasChanges = True
       else:
@@ -277,9 +351,13 @@ class CarState(object):
         self.cstm_btns.btns[id].btn_status = btn_status
         if (id == 1) and self.cstm_btns.btns[id].btn_name=="alca":
           self.alcaMode = (self.alcaMode + 1 ) % 4
-          self.kegman.conf['lastALCAMode'] = str(self.alcaMode)   # write last ALCAMode setting to file
-          self.kegman.write_config(self.kegman.conf)
+          kegman.save({'lastALCAMode': int(self.alcaMode)})  # write last ALCAMode setting to file
           self.cstm_btns.btns[id].btn_label2 = self.alcaLabels[self.alcaMode]
+          self.cstm_btns.hasChanges = True
+        elif (id == 2) and self.cstm_btns.btns[id].btn_name=="slow":
+          self.sloMode = (self.sloMode + 1 ) % 2
+          kegman.save({'lastSloMode': int(self.sloMode)})  # write last SloMode setting to file
+          self.cstm_btns.btns[id].btn_label2 = self.sloLabels[self.sloMode]
           self.cstm_btns.hasChanges = True
 
   def update(self, cp, cp_cam):
@@ -287,12 +365,25 @@ class CarState(object):
     self.can_valid = cp.can_valid
     self.cam_can_valid = cp_cam.can_valid
     msg = None
+    #lastspeedlimit = None
+    lastlive_MapData = None
     for socket, event in self.poller.poll(0):
       if socket is self.gps_location:
         msg = messaging.recv_one(socket)
       elif socket is self.lat_Control:
         self.lastlat_Control = messaging.recv_one(socket).latControl
-    
+      elif socket is self.live_MapData:
+        lastlive_MapData =  messaging.recv_one(socket).liveMapData
+    if lastlive_MapData is not None:
+      if lastlive_MapData.speedLimitValid:
+        self.lastspeedlimit = lastlive_MapData.speedLimit
+        self.lastspeedlimitvalid = True
+      else:
+        self.lastspeedlimitvalid = False
+        
+    if self.CP.carFingerprint == CAR.PRIUS:
+      self.alcaMode = 3
+      
     if msg is not None:
       gps_pkt = msg.gpsLocationExternal
       self.inaccuracy = gps_pkt.accuracy
@@ -324,7 +415,7 @@ class CarState(object):
 
     # Kalman filter
     if abs(v_wheel - self.v_ego) > 2.0:  # Prevent large accelerations when car starts at non zero speed
-      self.v_ego_kf.x = np.matrix([[v_wheel], [0.0]])
+      self.v_ego_kf.x = [[v_wheel], [0.0]]
 
     self.v_ego_raw = v_wheel
     v_ego_x = self.v_ego_kf.update(v_wheel)
@@ -336,7 +427,11 @@ class CarState(object):
     self.a_ego = float(v_ego_x[1])
     self.standstill = not v_wheel > 0.001
 
-    self.angle_steers = cp.vl["STEER_ANGLE_SENSOR"]['STEER_ANGLE'] + cp.vl["STEER_ANGLE_SENSOR"]['STEER_FRACTION']
+    if self.CP.carFingerprint == CAR.OLD_CAR:
+      self.angle_steers = -(cp.vl["STEER_ANGLE_SENSOR"]['STEER_ANGLE'] + cp.vl["STEER_ANGLE_SENSOR"]['STEER_FRACTION']/3)
+    else:  
+      self.angle_steers = cp.vl["STEER_ANGLE_SENSOR"]['STEER_ANGLE'] + cp.vl["STEER_ANGLE_SENSOR"]['STEER_FRACTION']
+      
     self.angle_steers_rate = cp.vl["STEER_ANGLE_SENSOR"]['STEER_RATE']
     can_gear = int(cp.vl["GEAR_PACKET"]['GEAR'])
     try:
@@ -353,9 +448,10 @@ class CarState(object):
       elif self.gasMode == 2:
         self.econ_on = 1
     self.gear_shifter = parse_gear_shifter(can_gear, self.shifter_values)
-    self.main_on = cp.vl["PCM_CRUISE_2"]['MAIN_ON']
+
     self.left_blinker_on = cp.vl["STEERING_LEVERS"]['TURN_SIGNALS'] == 1
     self.right_blinker_on = cp.vl["STEERING_LEVERS"]['TURN_SIGNALS'] == 2
+
     #self.lkas_barriers = cp_cam.vl["LKAS_HUD"]['BARRIERS']
     #self.left_line = cp_cam.vl["LKAS_HUD"]['LEFT_LINE']
     #self.right_line = cp_cam.vl["LKAS_HUD"]['RIGHT_LINE']
@@ -368,13 +464,17 @@ class CarState(object):
       self.blind_spot_on = bool(1)
     else:
       self.blind_spot_on = bool(0)
-    
+
     # we could use the override bit from dbc, but it's triggered at too high torque values
     self.steer_override = abs(cp.vl["STEER_TORQUE_SENSOR"]['STEER_TORQUE_DRIVER']) > 100
 
     # 2 is standby, 10 is active. TODO: check that everything else is really a faulty state
     self.steer_state = cp.vl["EPS_STATUS"]['LKA_STATE']
-    self.steer_error = cp.vl["EPS_STATUS"]['LKA_STATE'] not in [1, 5, 9, 17, 25]
+    if self.CP.enableGasInterceptor:
+      self.steer_error = cp.vl["EPS_STATUS"]['LKA_STATE'] not in [1, 3, 5, 9, 17, 25]
+    else:
+      self.steer_error = cp.vl["EPS_STATUS"]['LKA_STATE'] not in [1, 3, 5, 9, 17, 25]
+    self.steer_unavailable = cp.vl["EPS_STATUS"]['LKA_STATE'] in [3, 17]  # don't disengage, just warning
     self.ipas_active = cp.vl['EPS_STATUS']['IPAS_STATE'] == 3
     self.brake_error = 0
     self.steer_torque_driver = cp.vl["STEER_TORQUE_SENSOR"]['STEER_TORQUE_DRIVER']
@@ -390,8 +490,10 @@ class CarState(object):
       if self.cstm_btns.get_button_status("lka") == 0:
         self.lane_departure_toggle_on = False
       else:
-        self.lane_departure_toggle_on = True
-      
+        if self.alcaMode == 3 and (self.left_blinker_on or self.right_blinker_on):
+          self.lane_departure_toggle_on = False
+        else:
+          self.lane_departure_toggle_on = True
     self.distance_toggle = cp.vl["JOEL_ID"]['ACC_DISTANCE']
     if cp.vl["PCM_CRUISE_SM"]['DISTANCE_LINES'] == 2:
       self.trfix = True
@@ -409,12 +511,10 @@ class CarState(object):
       if self.read_distance_lines == 1:
         self.UE.custom_alert_message(2,"Following distance set to 0.9s",200,3)
       if self.read_distance_lines == 2:
-        self.UE.custom_alert_message(2,"Dynamic Following distance",200,3)
+        self.UE.custom_alert_message(2,"Smooth following distance",200,3)
       if self.read_distance_lines == 3:
         self.UE.custom_alert_message(2,"Following distance set to 2.7s",200,3)
       self.read_distance_lines_prev = self.read_distance_lines
-    if cp.vl["EPS_STATUS"]['LKA_STATE'] == 17:
-      self.cstm_btns.set_button_status("lka", 0)
     if bool(cp.vl["JOEL_ID"]['ACC_SLOW']) <> self.acc_slow_on_prev:
       self.acc_slow_on = bool(cp.vl["JOEL_ID"]['ACC_SLOW'])
       if self.acc_slow_on:
@@ -428,42 +528,93 @@ class CarState(object):
       else:
         self.acc_slow_on = True
 
+
     # we could use the override bit from dbc, but it's triggered at too high torque values
     self.steer_override = abs(self.steer_torque_driver) > STEER_THRESHOLD
 
-    self.user_brake = 0
-    if self.acc_slow_on:
-      self.v_cruise_pcm = max(7, cp.vl["PCM_CRUISE_2"]['SET_SPEED'] - 34.0)
-      self.Angles[self.Angle_counter] = abs(self.angle_steers)
-      self.Angles_later[self.Angle_counter] = abs(angle_later)
-      self.Angle_counter = (self.Angle_counter + 1 ) % 250
-      if not self.left_blinker_on and not self.right_blinker_on:
-        self.v_cruise_pcm = int(min(self.v_cruise_pcm, float(self.kegman.conf['brakefactor']) * interp(np.max(self.Angles), self.Angle, self.Angle_Speed)))
-        self.v_cruise_pcm = int(min(self.v_cruise_pcm, float(self.kegman.conf['brakefactor']) * interp(np.max(self.Angles_later), self.Angle, self.Angle_Speed)))
+    self.user_brake = cp.vl["BRAKE_MODULE"]['BRAKE_PRESSURE']
+    if self.CP.carFingerprint == CAR.LEXUS_IS:
+      self.pcm_acc_status = cp.vl["PCM_CRUISE_3"]['CRUISE_STATE']
+      self.v_cruise_pcm = cp.vl["PCM_CRUISE_3"]['SET_SPEED']
+      self.low_speed_lockout = 0
+      self.main_on = cp.vl["PCM_CRUISE_3"]['MAIN_ON']
+    elif self.CP.carFingerprint == CAR.LEXUS_ISH:
+      self.pcm_acc_status = cp.vl["PCM_CRUISE"]['CRUISE_ACTIVE']
+      self.v_cruise_pcm = cp.vl["PCM_CRUISE_ISH"]['SET_SPEED']
+      self.low_speed_lockout = False
+      self.main_on = cp.vl["PCM_CRUISE_ISH"]['MAIN_ON']
     else:
+      self.pcm_acc_status = cp.vl["PCM_CRUISE"]['CRUISE_STATE']
       self.v_cruise_pcm = cp.vl["PCM_CRUISE_2"]['SET_SPEED']
+      self.low_speed_lockout = cp.vl["PCM_CRUISE_2"]['LOW_SPEED_LOCKOUT'] == 2
+      self.main_on = cp.vl["PCM_CRUISE_2"]['MAIN_ON']
+
+    if self.acc_slow_on and self.CP.carFingerprint != CAR.OLD_CAR:
+      self.v_cruise_pcm = max(7, int(self.v_cruise_pcm) - 34.0)
+    if self.acc_slow_on:
+      if not self.left_blinker_on and not self.right_blinker_on:
+        self.Angles[self.Angle_counter] = abs(self.angle_steers)
+        self.Angles_later[self.Angle_counter] = abs(angle_later)
+        self.v_cruise_pcm = int(min(self.v_cruise_pcm, self.brakefactor * interp(np.max(self.Angles), self.Angle, self.Angle_Speed)))
+        self.v_cruise_pcm = int(min(self.v_cruise_pcm, self.brakefactor * interp(np.max(self.Angles_later), self.Angle, self.Angle_Speed)))
+      else:
+        self.Angles[self.Angle_counter] = 0
+        self.Angles_later[self.Angle_counter] = 0
+      self.Angle_counter = (self.Angle_counter + 1 ) % 250
 
     #print "distane"
     #print self.distance
     if self.distance < self.approachradius + self.includeradius:
-      print "speed"
-      print self.prev_distance - self.distance
+      #print "speed"
+      #print self.prev_distance - self.distance
       #if speed is 5% higher than the speedlimit
       if self.prev_distance - self.distance > self.speedlimit*0.00263889:
        if self.v_cruise_pcm > self.speedlimit:
          self.v_cruise_pcm = self.speedlimit
     if self.distance < self.includeradius:
-      print "inside"
+      #print "inside"
       if self.v_cruise_pcm > self.speedlimit:
         self.v_cruise_pcm =  self.speedlimit
     
-    self.pcm_acc_status = cp.vl["PCM_CRUISE"]['CRUISE_STATE']
     self.pcm_acc_active = bool(cp.vl["PCM_CRUISE"]['CRUISE_ACTIVE'])
     self.gas_pressed = not cp.vl["PCM_CRUISE"]['GAS_RELEASED']
-    self.low_speed_lockout = cp.vl["PCM_CRUISE_2"]['LOW_SPEED_LOCKOUT'] == 2
     self.brake_lights = bool(cp.vl["ESP_CONTROL"]['BRAKE_LIGHTS_ACC'] or self.brake_pressed)
     if self.CP.carFingerprint == CAR.PRIUS:
+      self.indi_toggle = True
       self.generic_toggle = cp.vl["AUTOPARK_STATUS"]['STATE'] != 0
+    elif self.CP.carFingerprint == CAR.LEXUS_ISH:
+      self.generic_toggle = bool(cp.vl["LIGHT_STALK_ISH"]['AUTO_HIGH_BEAM'])
     else:
       self.generic_toggle = bool(cp.vl["LIGHT_STALK"]['AUTO_HIGH_BEAM'])
+    self.tsgn1 = cp_cam.vl["RSA1"]['TSGN1']
+    self.spdval1 = cp_cam.vl["RSA1"]['SPDVAL1']
     
+    self.splsgn1 = cp_cam.vl["RSA1"]['SPLSGN1']
+    self.tsgn2 = cp_cam.vl["RSA1"]['TSGN2']
+    self.spdval2 = cp_cam.vl["RSA1"]['SPDVAL2']
+    
+    self.splsgn2 = cp_cam.vl["RSA1"]['SPLSGN2']
+    self.tsgn3 = cp_cam.vl["RSA2"]['TSGN3']
+    self.splsgn3 = cp_cam.vl["RSA2"]['SPLSGN3']
+    self.tsgn4 = cp_cam.vl["RSA2"]['TSGN4']
+    self.splsgn4 = cp_cam.vl["RSA2"]['SPLSGN4']
+    self.noovertake = self.tsgn1 == 65 or self.tsgn2 == 65 or self.tsgn3 == 65 or self.tsgn4 == 65 or self.tsgn1 == 66 or self.tsgn2 == 66 or self.tsgn3 == 66 or self.tsgn4 == 66
+    if self.spdval1 > 0 or self.spdval2 > 0:
+      dat = messaging.new_message()
+      dat.init('liveTrafficData')
+      if self.spdval1 > 0:
+        dat.liveTrafficData.speedLimitValid = True
+        if self.tsgn1 == 36:
+          dat.liveTrafficData.speedLimit = self.spdval1 * 1.60934
+        elif self.tsgn1 == 1:
+          dat.liveTrafficData.speedLimit = self.spdval1
+        else:
+          dat.liveTrafficData.speedLimit = 0
+      else:
+        dat.liveTrafficData.speedLimitValid = False
+      if self.spdval2 > 0:
+        dat.liveTrafficData.speedAdvisoryValid = True
+        dat.liveTrafficData.speedAdvisory = self.spdval2
+      else:
+        dat.liveTrafficData.speedAdvisoryValid = False
+      self.traffic_data_sock.send(dat.to_bytes())

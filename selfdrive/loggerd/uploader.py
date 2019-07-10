@@ -15,11 +15,14 @@ import subprocess
 from collections import Counter
 from selfdrive.swaglog import cloudlog
 from selfdrive.loggerd.config import ROOT
+from selfdrive.data_collection import df_uploader
+from selfdrive.data_collection import gps_uploader
 
 from common.params import Params
 from common.api import api_get
 
 fake_upload = os.getenv("FAKEUPLOAD") is not None
+
 
 def raise_on_thread(t, exctype):
   for ctid, tobj in threading._active.items():
@@ -43,6 +46,7 @@ def raise_on_thread(t, exctype):
     ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, 0)
     raise SystemError("PyThreadState_SetAsyncExc failed")
 
+
 def listdir_with_creation_date(d):
   lst = os.listdir(d)
   for fn in lst:
@@ -54,9 +58,11 @@ def listdir_with_creation_date(d):
       cloudlog.exception("listdir_with_creation_date: stat failed?")
       yield (None, fn)
 
+
 def listdir_by_creation_date(d):
   times_and_paths = list(listdir_with_creation_date(d))
   return [path for _, path in sorted(times_and_paths)]
+
 
 def clear_locks(root):
   for logname in os.listdir(root):
@@ -67,6 +73,7 @@ def clear_locks(root):
           os.unlink(os.path.join(path, fname))
     except OSError:
       cloudlog.exception("clear_locks failed")
+
 
 def is_on_wifi():
   # ConnectivityManager.getActiveNetworkInfo()
@@ -79,6 +86,7 @@ def is_on_wifi():
 
   return "\x00".join("WIFI") in data
 
+
 def is_on_hotspot():
   try:
     result = subprocess.check_output(["ifconfig", "wlan0"])
@@ -89,6 +97,7 @@ def is_on_hotspot():
     return (is_android or is_ios)
   except:
     return False
+
 
 class Uploader(object):
   def __init__(self, dongle_id, access_token, root):
@@ -118,8 +127,7 @@ class Uploader(object):
       try:
         names = os.listdir(path)
       except OSError:
-        names = []
-        pass
+        continue
       if any(name.endswith(".lock") for name in names):
         continue
 
@@ -146,7 +154,7 @@ class Uploader(object):
   def next_file_to_upload(self, with_video):
     # try to upload log files first
     for name, key, fn in self.gen_upload_files():
-      if name  == "rlog.bz2":
+      if name == "rlog.bz2":
         return (key, fn, 0)
 
     if with_video:
@@ -164,10 +172,9 @@ class Uploader(object):
 
     return None
 
-
   def do_upload(self, key, fn):
     try:
-      url_resp = api_get("v1.2/"+self.dongle_id+"/upload_url/", timeout=2, path=key, access_token=self.access_token)
+      url_resp = api_get("v1.2/" + self.dongle_id + "/upload_url/", timeout=2, path=key, access_token=self.access_token)
       url_resp_json = json.loads(url_resp.text)
       url = url_resp_json['url']
       headers = url_resp_json['headers']
@@ -175,9 +182,11 @@ class Uploader(object):
 
       if fake_upload:
         cloudlog.info("*** WARNING, THIS IS A FAKE UPLOAD TO %s ***" % url)
+
         class FakeResponse(object):
           def __init__(self):
             self.status_code = 200
+
         self.last_resp = FakeResponse()
       else:
         with open(fn, "rb") as f:
@@ -197,31 +206,11 @@ class Uploader(object):
 
     return self.last_resp
 
-  def killable_upload(self, key, fn):
-      self.last_resp = None
-      self.last_exc = None
-
-      self.upload_thread = threading.Thread(target=lambda: self.do_upload(key, fn))
-      self.upload_thread.start()
-      self.upload_thread.join()
-      self.upload_thread = None
-
-      return self.last_resp
-
-  def abort_upload(self):
-    thread = self.upload_thread
-    if thread is None:
-      return
-    if not thread.is_alive():
-      return
-    raise_on_thread(thread, SystemExit)
-    thread.join()
-
   def compress(self, key, fn):
     # write out the bz2 compress
     if fn.endswith("log"):
       ext = ".bz2"
-      cloudlog.info("compressing %r to %r", fn, fn+ext)
+      cloudlog.info("compressing %r to %r", fn, fn + ext)
       if os.system("nice -n 19 bzip2 -c %s > %s.tmp && mv %s.tmp %s%s && rm %s" % (fn, fn, fn, fn, ext, fn)) != 0:
         cloudlog.exception("upload: bzip2 compression failed")
         return False
@@ -245,19 +234,18 @@ class Uploader(object):
 
     if sz == 0:
       # can't upload files of 0 size
-      os.unlink(fn) # delete the file
+      os.unlink(fn)  # delete the file
       success = True
     else:
       cloudlog.info("uploading %r", fn)
-      # stat = self.killable_upload(key, fn)
       stat = self.normal_upload(key, fn)
       if stat is not None and stat.status_code in (200, 201):
         cloudlog.event("upload_success", key=key, fn=fn, sz=sz)
         try:
-          os.unlink(fn) # delete the file
+          os.unlink(fn)  # delete the file
         except OSError:
           pass
-          
+
         success = True
       else:
         cloudlog.event("upload_failed", stat=stat, exc=self.last_exc, key=key, fn=fn, sz=sz)
@@ -266,7 +254,6 @@ class Uploader(object):
     self.clean_dirs()
 
     return success
-
 
 
 def uploader_fn(exit_event):
@@ -282,24 +269,54 @@ def uploader_fn(exit_event):
   uploader = Uploader(dongle_id, access_token, ROOT)
 
   backoff = 0.1
+
+  try:
+    last_df_size = os.path.getsize("/data/openpilot/selfdrive/data_collection/df-data")
+  except:
+    last_df_size = None
+  try:
+    last_gps_size = os.path.getsize("/data/openpilot/selfdrive/data_collection/gps-data")
+  except:
+    last_gps_size = None
   while True:
     allow_cellular = (params.get("IsUploadVideoOverCellularEnabled") != "0")
     on_hotspot = is_on_hotspot()
     on_wifi = is_on_wifi()
     should_upload = allow_cellular or (on_wifi and not on_hotspot)
 
+    if on_wifi and not on_hotspot:
+      try:
+        if last_df_size == os.path.getsize("/data/openpilot/selfdrive/data_collection/df-data"):
+          df_uploader.upload_data()
+      except:
+        pass
+      try:
+        if last_gps_size == os.path.getsize("/data/openpilot/selfdrive/data_collection/gps-data"):
+          gps_uploader.upload_data()
+      except:
+        pass
+
+    try:
+      last_df_size = os.path.getsize("/data/openpilot/selfdrive/data_collection/df-data")
+    except:
+      last_df_size = None
+    try:
+      last_gps_size = os.path.getsize("/data/openpilot/selfdrive/data_collection/gps-data")
+    except:
+      last_gps_size = None
+
     if exit_event.is_set():
       return
-
-    d = uploader.next_file_to_compress()
-    if d is not None:
-      key, fn, _ = d
-      uploader.compress(key, fn)
-      continue
 
     if not should_upload:
       time.sleep(5)
       continue
+    else:  # wait to compress files until the user is at home, on wifi
+      d = uploader.next_file_to_compress()
+      if d is not None:
+        key, fn, _ = d
+        uploader.compress(key, fn)
+        continue
 
     d = uploader.next_file_to_upload(with_video=True)
     if d is None:
@@ -316,11 +333,13 @@ def uploader_fn(exit_event):
     else:
       cloudlog.info("backoff %r", backoff)
       time.sleep(backoff + random.uniform(0, backoff))
-      backoff = min(backoff*2, 120)
+      backoff = min(backoff * 2, 120)
     cloudlog.info("upload done, success=%r", success)
+
 
 def main(gctx=None):
   uploader_fn(threading.Event())
+
 
 if __name__ == "__main__":
   main()

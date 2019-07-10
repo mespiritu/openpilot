@@ -7,17 +7,18 @@ from selfdrive.car.toyota.toyotacan import make_can_msg, create_video_target,\
                                            create_steer_command, create_ui_command, \
                                            create_ipas_steer_command, create_accel_command, \
                                            create_fcw_command
-from selfdrive.car.toyota.values import ECU, STATIC_MSGS
+from selfdrive.car.toyota.values import ECU, STATIC_MSGS, TSSP2_CAR
 from selfdrive.can.packer import CANPacker
 from selfdrive.car.modules.ALCA_module import ALCAController
+from selfdrive.phantom import Phantom
 
 VisualAlert = car.CarControl.HUDControl.VisualAlert
 AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 
 # Accel limits
 ACCEL_HYST_GAP = 0.02  # don't change accel command for small oscilalitons within this value
-ACCEL_MAX = 1.5  # 1.5 m/s2
-ACCEL_MIN = -3.0 # 3   m/s2
+ACCEL_MAX = 3.5  # 3.5 m/s2
+ACCEL_MIN = -4.0 # 4   m/s2
 ACCEL_SCALE = max(ACCEL_MAX, -ACCEL_MIN)
 
 # Steer torque limits
@@ -133,12 +134,10 @@ class CarController(object):
     self.blindspot_blink_counter_right = 0
     self.steer_angle_enabled = False
     self.ipas_reset_counter = 0
-    self.barriers = 0
-    self.left_line_values = 1
-    self.right_line_values = 1
     self.last_fault_frame = -200
     self.blindspot_debug_enabled_left = False
     self.blindspot_debug_enabled_right = False
+    self.phantom = Phantom()
 
     self.fake_ecus = set()
     if enable_camera: self.fake_ecus.add(ECU.CAM)
@@ -149,12 +148,15 @@ class CarController(object):
     self.packer = CANPacker(dbc_name)
 
   def update(self, sendcan, enabled, CS, frame, actuators,
-             pcm_cancel_cmd, hud_alert, audible_alert, forwarding_camera, left_line, right_line, lead, leftLane_Depart, rightLane_Depart):
+             pcm_cancel_cmd, hud_alert, audible_alert, forwarding_camera,
+             left_line, right_line, lead, left_lane_depart, right_lane_depart):
+
     #update custom UI buttons and alerts
     CS.UE.update_custom_ui()
     if (frame % 1000 == 0):
       CS.cstm_btns.send_button_info()
       CS.UE.uiSetCarEvent(CS.cstm_btns.car_folder,CS.cstm_btns.car_name)
+      
     # *** compute control surfaces ***
 
     # gas and brake
@@ -176,7 +178,7 @@ class CarController(object):
     alca_angle = 0.
     turn_signal_needed = 0
     # Update ALCA status and custom button every 0.1 sec.
-    if self.ALCA.pid == None:
+    if self.ALCA.pid == None and not CS.indi_toggle:
       self.ALCA.set_pid(CS)
     if (frame % 10 == 0):
       self.ALCA.update_status(CS.cstm_btns.get_button_status("alca") > 0)
@@ -184,29 +186,44 @@ class CarController(object):
     alca_angle, alca_steer, alca_enabled, turn_signal_needed = self.ALCA.update(enabled, CS, frame, actuators)
     #apply_steer = int(round(alca_steer * STEER_MAX))
 
+    self.phantom.update()
     # steer torque
-    apply_steer = int(round(alca_steer * SteerLimitParams.STEER_MAX))
-
-    apply_steer = apply_toyota_steer_torque_limits(apply_steer, self.last_steer, CS.steer_torque_motor, SteerLimitParams)
+    if self.phantom.data["status"]:
+      apply_steer = int(round(self.phantom.data["angle"]))
+      if abs(CS.angle_steers) > 400:
+        apply_steer = 0
+    else:
+      apply_steer = int(round(alca_steer * SteerLimitParams.STEER_MAX))
+      if abs(CS.angle_steers) > 100:
+        apply_steer = 0
+    if not CS.lane_departure_toggle_on:
+      apply_steer = 0
 
     # only cut torque when steer state is a known fault
-    if CS.steer_state in [9, 25]:
+    if CS.steer_state in [3, 7, 9, 11, 25]:
       self.last_fault_frame = frame
 
     # Cut steering for 2s after fault
-    if not enabled or (frame - self.last_fault_frame < 200):
+    cutout_time = 100 if self.phantom.data["status"] else 200
+
+    if not enabled or (frame - self.last_fault_frame < cutout_time):
       apply_steer = 0
       apply_steer_req = 0
     else:
       apply_steer_req = 1
-    if not enabled and rightLane_Depart and CS.v_ego > 12.5 and not CS.right_blinker_on:
+
+    apply_steer = apply_toyota_steer_torque_limits(apply_steer, self.last_steer, CS.steer_torque_motor, SteerLimitParams)
+    if apply_steer == 0 and self.last_steer == 0:
+      apply_steer_req = 0
+
+    if not enabled and right_lane_depart and CS.v_ego > 12.5 and not CS.right_blinker_on:
       apply_steer = self.last_steer + 3
       apply_steer = min(apply_steer , 800)
       #print "right"
       #print apply_steer
       apply_steer_req = 1
       
-    if not enabled and leftLane_Depart and CS.v_ego > 12.5 and not CS.left_blinker_on:
+    if not enabled and left_lane_depart and CS.v_ego > 12.5 and not CS.left_blinker_on:
       apply_steer = self.last_steer - 3
       apply_steer = max(apply_steer , -800)
       #print "left"
@@ -215,7 +232,7 @@ class CarController(object):
 
     self.steer_angle_enabled, self.ipas_reset_counter = \
       ipas_state_transition(self.steer_angle_enabled, enabled, CS.ipas_active, self.ipas_reset_counter)
-    #print self.steer_angle_enabled, self.ipas_reset_counter, CS.ipas_active
+    #print("{0} {1} {2}".format(self.steer_angle_enabled, self.ipas_reset_counter, CS.ipas_active))
 
     # steer angle
     if self.steer_angle_enabled and CS.ipas_active:
@@ -291,7 +308,7 @@ class CarController(object):
         can_sends.append(poll_blindspot_status(RIGHT_BLINDSPOT))
 
     #*** control msgs ***
-    #print "steer", apply_steer, min_lim, max_lim, CS.steer_torque_motor
+    #print("steer {0} {1} {2} {3}".format(apply_steer, min_lim, max_lim, CS.steer_torque_motor)
 
     # toyota can trace shows this message at 42Hz, with counter adding alternatively 1 and 2;
     # sending it at 100Hz seem to allow a higher rate limit, as the rate limit seems imposed
@@ -300,19 +317,11 @@ class CarController(object):
       if self.angle_control:
         can_sends.append(create_steer_command(self.packer, 0., 0, frame))
       else:
-        if CS.lane_departure_toggle_on:
-          can_sends.append(create_steer_command(self.packer, apply_steer, apply_steer_req, frame))
-          #print "here"
-        else:
-          can_sends.append(create_steer_command(self.packer, 0., 0, frame))
-        # rav4h with dsu disconnected
+        can_sends.append(create_steer_command(self.packer, apply_steer, apply_steer_req, frame))
 
     if self.angle_control:
-      if CS.lane_departure_toggle_on:
-        can_sends.append(create_ipas_steer_command(self.packer, apply_angle, self.steer_angle_enabled,
+      can_sends.append(create_ipas_steer_command(self.packer, apply_angle, self.steer_angle_enabled,
                                                    ECU.APGS in self.fake_ecus))
-      else:
-        can_sends.append(create_ipas_steer_command(self.packer, 0, 0, True))
     elif ECU.APGS in self.fake_ecus:
       can_sends.append(create_ipas_steer_command(self.packer, 0, 0, True))
     
@@ -333,11 +342,11 @@ class CarController(object):
     if (frame % 2 == 0) and (CS.CP.enableGasInterceptor):
         # send exactly zero if apply_gas is zero. Interceptor will send the max between read value and apply_gas.
         # This prevents unexpected pedal range rescaling
-        can_sends.append(create_gas_command(self.packer, apply_gas, frame/2))
+        can_sends.append(create_gas_command(self.packer, apply_gas, frame//2))
 
     if frame % 10 == 0 and ECU.CAM in self.fake_ecus and not forwarding_camera:
       for addr in TARGET_IDS:
-        can_sends.append(create_video_target(frame/10, addr))
+        can_sends.append(create_video_target(frame//10, addr))
 
     # ui mesg is at 100Hz but we send asap if:
     # - there is something to display
@@ -351,19 +360,10 @@ class CarController(object):
       self.alert_active = not self.alert_active
     else:
       send_ui = False
-    self.left_line_values = 2 - left_line
-    self.right_line_values = 2 - right_line
-    self.barriers = 0
-    if leftLane_Depart and CS.v_ego > 12.5:
-      self.barriers = 3
-      self.left_line_values = 3
-    elif rightLane_Depart and CS.v_ego > 12.5:
-      self.barriers = 2
-      self.right_line_values = 3
     if (frame % 100 == 0 or send_ui) and ECU.CAM in self.fake_ecus:
-      can_sends.append(create_ui_command(self.packer, steer, sound1, sound2, self.barriers, self.left_line_values, self.right_line_values))
+      can_sends.append(create_ui_command(self.packer, steer, sound1, sound2, left_line, right_line, left_lane_depart, right_lane_depart))
 
-    if frame % 100 == 0 and ECU.DSU in self.fake_ecus:
+    if frame % 100 == 0 and ECU.DSU in self.fake_ecus and self.car_fingerprint not in TSSP2_CAR:
       can_sends.append(create_fcw_command(self.packer, fcw))
 
     #*** static msgs ***
@@ -372,11 +372,11 @@ class CarController(object):
       if frame % fr_step == 0 and ecu in self.fake_ecus and self.car_fingerprint in cars and not (ecu == ECU.CAM and forwarding_camera):
         # special cases
         if fr_step == 5 and ecu == ECU.CAM and bus == 1:
-          cnt = (((frame / 5) % 7) + 1) << 5
+          cnt = (((frame // 5) % 7) + 1) << 5
           vl = chr(cnt) + vl
         elif addr in (0x489, 0x48a) and bus == 0:
           # add counter for those 2 messages (last 4 bits)
-          cnt = ((frame/100)%0xf) + 1
+          cnt = ((frame // 100) % 0xf) + 1
           if addr == 0x48a:
             # 0x48a has a 8 preceding the counter
             cnt += 1 << 7
@@ -385,4 +385,4 @@ class CarController(object):
         can_sends.append(make_can_msg(addr, vl, bus, False))
 
 
-    sendcan.send(can_list_to_can_capnp(can_sends, msgtype='sendcan').to_bytes())
+    sendcan.send(can_list_to_can_capnp(can_sends, msgtype='sendcan'))
