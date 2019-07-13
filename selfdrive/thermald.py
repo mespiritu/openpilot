@@ -79,13 +79,13 @@ def set_eon_fan(val):
     last_eon_fan_val = val
 
 # temp thresholds to control fan speed - high hysteresis
-_TEMP_THRS_H = [50., 65., 80., 10000]
+_TEMP_THRS_H = [50., 55., 80., 10000]
 # temp thresholds to control fan speed - low hysteresis
-_TEMP_THRS_L = [42.5, 57.5, 72.5, 10000]
+_TEMP_THRS_L = [42.5, 50.5, 72.5, 10000]
 # fan speed options
-_FAN_SPEEDS = [0, 16384, 32768, 65535]
+_FAN_SPEEDS = [0, 65535, 65535, 65535]
 # max fan speed only allowed if battery is hot
-_BAT_TEMP_THERSHOLD = 45.
+_BAT_TEMP_THERSHOLD = 37.
 
 
 def handle_fan(max_cpu_temp, bat_temp, fan_speed):
@@ -125,7 +125,7 @@ def check_car_battery_voltage(should_start, health, charging_disabled, msg):
   elif msg.thermal.batteryCurrent < 0 and msg.thermal.batteryPercent > int(kegman.conf['battChargeMax']):
     charging_disabled = True
     os.system('echo "0" > /sys/class/power_supply/battery/charging_enabled')
-    
+
   return charging_disabled
 
 
@@ -311,7 +311,7 @@ def thermald_thread():
               os.kill(int(pid), signal.SIGTERM)
         else:
           # if not just shut it down completely (E.g. Bosch or disconnected)
-          os.system('LD_LIBRARY_PATH="" svc power shutdown')      
+          os.system('LD_LIBRARY_PATH="" svc power shutdown')
 
         services_killed = True
 
@@ -325,7 +325,7 @@ def thermald_thread():
       msg.thermal.batteryStatus = "Discharging"
     else:
       msg.thermal.batteryStatus = "Charging"
-    
+
     msg.thermal.chargingDisabled = charging_disabled
     msg.thermal.chargingError = current_filter.x > 1.0   # if current is > 1A out, then charger might be off
     msg.thermal.started = started_ts is not None
@@ -351,4 +351,3 @@ def main(gctx=None):
 
 if __name__ == "__main__":
   main()
-
