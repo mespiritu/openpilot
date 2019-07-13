@@ -7,7 +7,7 @@ from selfdrive.swaglog import cloudlog
 from common.basedir import BASEDIR
 
 def read_config():
-  default_config = {"cameraOffset": 0.06, "lastTrMode": 1, "battChargeMin": 90, "battChargeMax": 95,
+  default_config = {"cameraOffset": 0.06, "lastTrMode": 1, "battChargeMin": 50, "battChargeMax": 65,
                     "wheelTouchSeconds": 1800, "battPercOff": 25, "carVoltageMinEonShutdown": 11200,
                     "brakeStoppingTarget": 0.25, "angle_steers_offset": 0, "brake_distance_extra": 1,
                     "lastALCAMode": 1, "brakefactor": 1.2, "lastGasMode": 0, "lastSloMode": 1,
@@ -48,10 +48,10 @@ def read_config():
       config.update({"carVoltageMinEonShutdown": 11200})
     if int(config["wheelTouchSeconds"]) < 200:
       config.update({"wheelTouchSeconds": 1800})
-    if int(config["battChargeMin"]) == 85:
-      config.update({"battChargeMin": 90})
-    if int(config["battChargeMax"]) == 90:
-      config.update({"battChargeMax": 95})
+    if int(config["battChargeMin"]) > 50:
+      config.update({"battChargeMin": 50})
+    if int(config["battChargeMax"]) > 65:
+      config.update({"battChargeMax": 65})
   else:
     write_config(default_config)
     config = default_config
